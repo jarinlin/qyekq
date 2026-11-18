@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect x="1.5" y="1.5" width="29" height="29" rx="8" fill="none" stroke="#3a3a44" stroke-width="1.5"/>
+  <g>
+    <rect x="5.5" y="5.5" width="21" height="21" rx="6" fill="none" stroke="#8b8dff" stroke-width="1.5"/>
+    <animateTransform attributeName="transform" type="rotate" from="0 16 16" to="90 16 16" dur="16s" repeatCount="indefinite"/>
+  </g>
+  <rect x="10.5" y="10.5" width="11" height="11" rx="3" fill="none" stroke="#3a3a44" stroke-width="1.5"/>
+</svg>
