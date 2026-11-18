@@ -494,6 +494,24 @@ function trapSheetFocus(event) {
   }
 }
 
+function toggleDirectory(button) {
+  const group = button.closest("[data-directory-group]");
+  const panel = group?.querySelector(".directory-people");
+  if (!panel) return;
+  const open = panel.hidden;
+  panel.hidden = !open;
+  button.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function syncDirectoryGroup(group) {
+  const all = group.querySelector("[data-directory-all]");
+  if (!all) return;
+  const boxes = [...group.querySelectorAll("input[name=userid]")].filter((box) => !box.closest("[data-directory-person]")?.hidden);
+  const checked = boxes.filter((box) => box.checked).length;
+  all.checked = boxes.length > 0 && checked === boxes.length;
+  all.indeterminate = checked > 0 && checked < boxes.length;
+}
+
 function directoryChoices() {
   const taken = new Set((state.data.items || []).map((person) => person.userid));
   return (state.data.directory || []).filter((person) => person.userid && !taken.has(person.userid));
@@ -522,11 +540,19 @@ function directoryList() {
       <span>${esc(person.name)}${extra ? `<span class="mono"> 兼 ${esc(extra)}</span>` : ""}</span>
     </label>`).join("");
     return `<div data-directory-group data-dept="${esc(name)}">
-      <label class="directory-head"><input type="checkbox" data-directory-all> ${esc(name)}<span>${members.length}</span></label>
-      ${people}
+      <div class="directory-head">
+        <label class="directory-check"><input type="checkbox" data-directory-all aria-label="选中${esc(name)}全部成员"></label>
+        <button type="button" class="directory-toggle" data-action="toggle-directory" aria-expanded="false">
+          <span>${esc(name)}</span>
+          <span class="directory-count">${members.length}</span>
+          <span class="chevron" aria-hidden="true"></span>
+        </button>
+      </div>
+      <div class="directory-people" hidden>${people}</div>
     </div>`;
   }).join("");
   return `<label class="field"><span>搜索</span><input id="directory-q" type="search" placeholder="按姓名或部门筛选" autocomplete="off"></label>
+    <p class="hint">默认只显示部门。勾选部门会选中该部门全部成员，点部门名称展开名单。</p>
     <div class="directory-list">${blocks}</div>`;
 }
 
@@ -647,7 +673,7 @@ function ruleForm(rule) {
   const schedules = (state.data.schedules || []).map(
     (item) => `<option value="${item.id}" ${item.id === row.schedule_id ? "selected" : ""}>${esc(item.name)} (${esc(item.clock_in)}–${esc(item.clock_out)})</option>`
   ).join("");
-  const repeating = row.repeat_every_minutes > 0;
+  const again = row.repeat_max > 1;
 
   openSheet(rule ? "编辑提醒规则" : "新增提醒规则", `
     <form novalidate data-form="rule" data-id="${rule ? rule.id : ""}">
@@ -685,18 +711,8 @@ function ruleForm(rule) {
 
       <div class="choice">
         <label><input type="checkbox" name="require_not_checked" ${row.require_not_checked ? "checked" : ""}> 查到企业微信已打卡记录则自动跳过</label>
-        <label><input type="checkbox" name="repeat_on" ${repeating ? "checked" : ""}> 还没打卡时，过一会儿再提醒</label>
+        <label><input type="checkbox" name="repeat_on" ${again ? "checked" : ""}> 还没打卡时，15 分钟后再提醒一次</label>
       </div>
-
-      <div class="grid-2" data-repeat-fields ${repeating ? "" : "hidden"}>
-        <label class="field"><span>重复间隔（分钟）</span><input name="repeat_every_minutes" type="number" min="1" max="240" value="${row.repeat_every_minutes || 15}"></label>
-        <label class="field"><span>最多发送次数</span><input name="repeat_max" type="number" min="1" max="12" value="${row.repeat_max || 3}"></label>
-      </div>
-
-      <label class="field">
-        <span>启动补发窗口（分钟）</span>
-        <input name="grace_minutes" type="number" min="1" max="180" required value="${row.grace_minutes}">
-      </label>
 
       <label class="field">
         <span>消息模板 ${InfoTip("支持变量：{name} {userid} {kind} {time} {clock_time} {date}")}</span>
@@ -807,6 +823,7 @@ async function onClick(event) {
       return;
     }
     if (action === "close-sheet") closeSheet();
+    else if (action === "toggle-directory") toggleDirectory(target);
     else if (action === "new-person") personForm(null);
     else if (action === "edit-person") personForm(findById(state.data.items, id));
     else if (action === "delete-person") await removeRow("personnel", id, target.dataset.name, {
@@ -1081,9 +1098,9 @@ async function saveRule(form) {
     target_mode: mode,
     target_ids: mode === "selected" ? targetIds : [],
     offset_minutes: Number(form.offset_minutes.value),
-    repeat_every_minutes: repeating ? Number(form.repeat_every_minutes.value) : 0,
-    repeat_max: repeating ? Number(form.repeat_max.value) : 1,
-    grace_minutes: Number(form.grace_minutes.value),
+    repeat_every_minutes: repeating ? 15 : 0,
+    repeat_max: repeating ? 2 : 1,
+    grace_minutes: 60,
     require_not_checked: form.require_not_checked.checked,
     template: form.template.value.trim(),
     enabled: form.enabled.checked,
@@ -1143,10 +1160,10 @@ function onChange(event) {
     group?.querySelectorAll("input[name=userid]").forEach((box) => {
       if (!box.closest("[data-directory-person]")?.hidden) box.checked = target.checked;
     });
+    if (group) syncDirectoryGroup(group);
   }
-  if (target.name === "repeat_on") {
-    const box = document.querySelector("[data-repeat-fields]");
-    if (box) box.hidden = !target.checked;
+  if (target.name === "userid" && target.closest("[data-directory-group]")) {
+    syncDirectoryGroup(target.closest("[data-directory-group]"));
   }
   if (target.name === "target_mode") {
     const box = document.querySelector("[data-targets]");
@@ -1171,11 +1188,24 @@ function onInput(event) {
   if (event.target.closest(".field")) clearFieldError(event.target);
   if (event.target.id === "directory-q") {
     const query = event.target.value.trim().toLowerCase();
-    document.querySelectorAll("[data-directory-person]").forEach((row) => {
-      row.hidden = Boolean(query) && !row.dataset.q.includes(query);
-    });
     document.querySelectorAll("[data-directory-group]").forEach((group) => {
-      group.hidden = ![...group.querySelectorAll("[data-directory-person]")].some((row) => !row.hidden);
+      const dept = (group.dataset.dept || "").toLowerCase();
+      const deptMatch = Boolean(query) && dept.includes(query);
+      const people = [...group.querySelectorAll("[data-directory-person]")];
+      people.forEach((row) => {
+        const personMatch = !query || row.dataset.q.includes(query);
+        row.hidden = Boolean(query) && !personMatch && !deptMatch;
+      });
+      group.hidden = Boolean(query) && !deptMatch && people.every((row) => row.hidden);
+      const panel = group.querySelector(".directory-people");
+      const toggle = group.querySelector("[data-action=toggle-directory]");
+      const showPeople = Boolean(query) && people.some((row) => !row.hidden && row.dataset.q.includes(query));
+      if (panel && toggle) {
+        panel.hidden = query ? !showPeople && !deptMatch : true;
+        if (query && deptMatch) panel.hidden = false;
+        if (!query) panel.hidden = true;
+        toggle.setAttribute("aria-expanded", panel.hidden ? "false" : "true");
+      }
     });
     return;
   }

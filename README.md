@@ -28,7 +28,7 @@ Redis 只有密码时写成 `redis://:密码@主机:6379/0`。有账号和密码
 
 ```text
 python -m venv .venv
-.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
+.venv\Scripts\python.exe -m pip install -r requirements.txt
 .venv\Scripts\python.exe run.py
 ```
 

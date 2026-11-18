@@ -134,16 +134,10 @@ def _prepare_rule(body: RuleIn):
         raise HTTPException(400, "适用人员要选全部，或指定人员")
     if body.offset_minutes < -240 or body.offset_minutes > 360:
         raise HTTPException(400, "相对时间要在提前 240 分钟到延后 360 分钟之间")
-    if body.grace_minutes < 1 or body.grace_minutes > 180:
-        raise HTTPException(400, "补发窗口要在 1 到 180 分钟之间")
-    every = body.repeat_every_minutes
-    repeat_max = body.repeat_max
-    if every == 0:
-        repeat_max = 1
-    elif every < 1 or every > 240:
-        raise HTTPException(400, "重复间隔要在 1 到 240 分钟之间")
-    elif repeat_max < 1 or repeat_max > 12:
-        raise HTTPException(400, "最多重复 12 次")
+    if body.repeat_every_minutes:
+        every, repeat_max = 15, 2
+    else:
+        every, repeat_max = 0, 1
     if body.target_mode == "selected" and not body.target_ids:
         raise HTTPException(400, "指定人员时至少选一个人")
     known = {person["id"] for person in db.list_personnel()}
@@ -160,6 +154,7 @@ def _prepare_rule(body: RuleIn):
     data["template"] = body.template.strip()
     data["repeat_every_minutes"] = every
     data["repeat_max"] = repeat_max
+    data["grace_minutes"] = 60
     data["target_ids"] = target_ids if body.target_mode == "selected" else []
     if not data["template"]:
         raise HTTPException(400, "先写提醒文案")

@@ -13,6 +13,7 @@ runtime = {
 }
 
 KIND_LABEL = {"clock_in": "上班", "clock_out": "下班"}
+GRACE_MINUTES = 60
 KIND_KEY = {"clock_in": "in", "clock_out": "out"}
 
 
@@ -205,7 +206,7 @@ def build_board():
                 rule["repeat_max"],
             ):
                 previous = existing.get((rule["id"], slot_iso(moment)))
-                status = slot_status(moment, local_now, rule["grace_minutes"], previous)
+                status = slot_status(moment, local_now, GRACE_MINUTES, previous)
                 slot = {
                     "rule_id": rule["id"],
                     "rule_name": rule["name"],
@@ -341,7 +342,7 @@ def _run():
                 previous = existing.get((rule["id"], slot_iso(moment)))
                 if previous:
                     done[slot_iso(moment)] = previous
-            due = due_slots(slots, now, rule["grace_minutes"], done)
+            due = due_slots(slots, now, GRACE_MINUTES, done)
             if not due:
                 continue
             plans.append(

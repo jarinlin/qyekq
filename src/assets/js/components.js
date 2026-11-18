@@ -235,9 +235,7 @@ function RuleCard(rule, defaultSchedule, schedules = []) {
   const whoLabel = rule.target_mode === "selected"
     ? `指定 ${rule.target_ids.length} 人`
     : "全部启用人员";
-  const repeatLabel = rule.repeat_every_minutes
-    ? `每 ${rule.repeat_every_minutes} 分钟 · 最多 ${rule.repeat_max} 次`
-    : "只发一次";
+  const repeatLabel = rule.repeat_max > 1 ? "15 分钟后再提醒一次" : "只发一次";
   const scopeLabel = rule.schedule_name ? rule.schedule_name : "跟随默认/个人班次";
 
   const kindClass = rule.kind === "clock_out" ? "tag-out" : "tag-in";

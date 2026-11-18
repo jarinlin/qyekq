@@ -1512,15 +1512,60 @@ textarea:focus {
 }
 
 .directory-head {
+  display: flex;
+  align-items: stretch;
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid rgba(39, 39, 42, 0.6);
+}
+
+.directory-check {
+  display: flex;
+  align-items: center;
+  padding-left: 12px;
+}
+
+.directory-toggle {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 12px 0 8px;
+  border: 0;
+  background: transparent;
   color: var(--text-primary);
+  font: inherit;
   font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.directory-toggle:hover {
+  color: var(--text-primary);
   background: rgba(255, 255, 255, 0.03);
 }
 
-.directory-head span {
-  margin-left: 8px;
+.directory-count {
   color: var(--text-subtle);
   font-weight: 500;
+}
+
+.directory-toggle .chevron {
+  width: 7px;
+  height: 7px;
+  margin-left: auto;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  opacity: 0.55;
+}
+
+.directory-toggle[aria-expanded="true"] .chevron {
+  transform: rotate(45deg) translateY(-2px);
+}
+
+.directory-people label {
+  padding-left: 40px;
 }
 
 .directory-list input {
