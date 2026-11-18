@@ -25,6 +25,14 @@ CREATE TABLE IF NOT EXISTS personnel (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS directory_users (
+    userid TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    department TEXT NOT NULL DEFAULT '',
+    mobile TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS schedules (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -182,9 +190,9 @@ def _seed(conn):
         (now, now),
     )
     rules = [
-        ("上班前提醒", "clock_in", -15, 0, 1, 1, "{name}，{clock_time} 上班。现在是 {time}，记得打卡。"),
-        ("下班前提醒", "clock_out", -10, 0, 1, 1, "{name}，{clock_time} 下班。可以准备打卡了。"),
-        ("上班未打卡催办", "clock_in", 5, 15, 3, 1, "{name}，已过上班时间 {clock_time}，还没看到你的上班打卡。"),
+        ("上班前提醒", "clock_in", -15, 0, 1, 1, "{name}，{clock_time} 就要上班了。先打个卡，待会忙起来也不用记着。"),
+        ("下班前提醒", "clock_out", -10, 0, 1, 1, "{name}，{clock_time} 下班。走之前打个卡，今天这件小事就办完了。"),
+        ("上班后再提醒一次", "clock_in", 5, 15, 3, 1, "{name}，{clock_time} 的上班卡如果还没打，现在补一下就好。"),
     ]
     for name, kind, offset, every, repeat_max, require, template in rules:
         conn.execute(
@@ -299,6 +307,90 @@ def delete_person(person_id):
         conn.execute("DELETE FROM schedules WHERE personnel_id=?", (person_id,))
         cur = conn.execute("DELETE FROM personnel WHERE id=?", (person_id,))
         return cur.rowcount > 0
+
+
+def list_directory():
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM directory_users ORDER BY department COLLATE NOCASE, name COLLATE NOCASE, userid"
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def save_directory(rows, replace):
+    now = now_iso()
+    kept = []
+    with connect() as conn:
+        for row in rows:
+            userid = (row.get("userid") or "").strip()
+            name = (row.get("name") or "").strip() or userid
+            if not userid:
+                continue
+            kept.append(userid)
+            conn.execute(
+                """
+                INSERT INTO directory_users (userid, name, department, mobile, updated_at)
+                VALUES (?, ?, ?, '', ?)
+                ON CONFLICT(userid) DO UPDATE SET
+                    name=excluded.name,
+                    department=excluded.department,
+                    updated_at=excluded.updated_at
+                """,
+                (userid, name, row.get("department") or "", now),
+            )
+        if replace:
+            if kept:
+                marks = ",".join("?" * len(kept))
+                conn.execute(f"DELETE FROM directory_users WHERE userid NOT IN ({marks})", kept)
+            else:
+                conn.execute("DELETE FROM directory_users")
+        if kept:
+            conn.execute(
+                """
+                UPDATE personnel
+                SET name = (
+                        SELECT name FROM directory_users
+                        WHERE directory_users.userid = personnel.userid
+                    ),
+                    department = (
+                        SELECT department FROM directory_users
+                        WHERE directory_users.userid = personnel.userid
+                    ),
+                    updated_at = ?
+                WHERE userid IN (SELECT userid FROM directory_users)
+                """,
+                (now,),
+            )
+    return {"cached": len(kept)}
+
+
+def add_from_directory(userids):
+    now = now_iso()
+    added = 0
+    with connect() as conn:
+        for userid in dict.fromkeys(userids):
+            userid = (userid or "").strip()
+            row = conn.execute(
+                "SELECT * FROM directory_users WHERE userid=?",
+                (userid,),
+            ).fetchone()
+            if not row:
+                continue
+            existing = conn.execute(
+                "SELECT id FROM personnel WHERE userid=?",
+                (userid,),
+            ).fetchone()
+            if existing:
+                continue
+            conn.execute(
+                """
+                INSERT INTO personnel (userid, name, department, mobile, enabled, created_at, updated_at)
+                VALUES (?, ?, ?, ?, 1, ?, ?)
+                """,
+                (row["userid"], row["name"], row["department"], row["mobile"] or "", now, now),
+            )
+            added += 1
+    return {"added": added}
 
 
 def upsert_people(rows):
@@ -616,17 +708,31 @@ def on_leave(userid, moment_iso):
     return False
 
 
-def list_logs(limit=100, status=None):
-    sql = "SELECT * FROM reminder_logs"
+def list_logs(page=1, page_size=20, status=None):
+    page = max(int(page), 1)
+    page_size = min(max(int(page_size), 1), 100)
+    where = ""
     args = []
     if status:
-        sql += " WHERE status=?"
+        where = " WHERE status=?"
         args.append(status)
-    sql += " ORDER BY id DESC LIMIT ?"
-    args.append(int(limit))
     with connect() as conn:
-        rows = conn.execute(sql, args).fetchall()
-    return [dict(row) for row in rows]
+        total = conn.execute(f"SELECT COUNT(*) AS n FROM reminder_logs{where}", args).fetchone()["n"]
+        pages = max((total + page_size - 1) // page_size, 1) if total else 1
+        if page > pages:
+            page = pages
+        offset = (page - 1) * page_size
+        rows = conn.execute(
+            f"SELECT * FROM reminder_logs{where} ORDER BY id DESC LIMIT ? OFFSET ?",
+            [*args, page_size, offset],
+        ).fetchall()
+    return {
+        "items": [dict(row) for row in rows],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "pages": pages,
+    }
 
 
 def logs_on(day):

@@ -128,39 +128,147 @@ def send_text(userid, content):
     return data.get("msgid") or ""
 
 
-def sync_users():
-    settings, _corp_id, _secret, _agent_id = _configured()
-    department_id = (settings.get("sync_department_id") or "1").strip() or "1"
-    data = _request(
+def _department_roots(items):
+    ids = {item.get("id") for item in items if item.get("id") is not None}
+    roots = [
+        item.get("id")
+        for item in items
+        if item.get("id") is not None and item.get("parentid") not in ids
+    ]
+    return roots or list(ids)
+
+
+def _department_names(user, departments):
+    ids = list(user.get("department") or [])
+    main = user.get("main_department")
+    if main in ids:
+        ids.remove(main)
+        ids.insert(0, main)
+    elif main:
+        ids.insert(0, main)
+    names = []
+    for item in ids:
+        label = departments.get(item) or str(item)
+        if label not in names:
+            names.append(label)
+    return names
+
+
+def _remember(seen, user, departments):
+    userid = (user.get("userid") or "").strip()
+    if not userid or userid in seen:
+        return
+    seen[userid] = {
+        "userid": userid,
+        "name": user.get("name") or userid,
+        "department": " / ".join(_department_names(user, departments)),
+    }
+
+
+def _optional(method, path, **kwargs):
+    try:
+        return _request(method, path, **kwargs), None
+    except WeComError as exc:
+        return None, exc
+
+
+def _pull_department(seen, department_id, departments):
+    data, err = _optional(
         "GET",
         "user/simplelist",
-        params={"department_id": department_id, "fetch_child": 1},
+        params={"department_id": int(department_id), "fetch_child": 1},
     )
+    if data:
+        for user in data.get("userlist") or []:
+            _remember(seen, user, departments)
+    return err
+
+
+def sync_users():
+    _settings, _corp_id, _secret, agent_id = _configured()
     departments = {}
-    try:
-        listing = _request("GET", "department/list")
-        for item in listing.get("department") or []:
+    seen = {}
+    last_error = None
+
+    listing, err = _optional("GET", "department/list")
+    if err:
+        last_error = err
+    if listing:
+        items = listing.get("department") or []
+        for item in items:
             departments[item.get("id")] = item.get("name") or str(item.get("id"))
-    except WeComError:
-        departments = {}
-    rows = []
-    for user in data.get("userlist") or []:
-        userid = user.get("userid") or ""
-        names = []
-        for item in user.get("department") or []:
-            names.append(departments.get(item) or str(item))
-        rows.append(
-            {
-                "userid": userid,
-                "name": user.get("name") or userid,
-                "department": " / ".join(names),
-            }
-        )
-    result = db.upsert_people(rows)
-    if result["total"] == 0:
-        result["message"] = "没有拉到人。确认应用可见范围，以及部门 ID 是否正确。"
+        for department_id in _department_roots(items):
+            err = _pull_department(seen, department_id, departments)
+            if err:
+                last_error = err
+
+    agent, err = _optional("GET", "agent/get", params={"agentid": agent_id})
+    if err:
+        last_error = err
+    if agent and not listing:
+        for department_id in (agent.get("allow_partys") or {}).get("partyid") or []:
+            err = _pull_department(seen, department_id, departments)
+            if err:
+                last_error = err
+    if agent:
+        users = (agent.get("allow_userinfos") or {}).get("user") or []
+        for item in users:
+            userid = item.get("userid")
+            if not userid or userid in seen:
+                continue
+            detail, err = _optional("GET", "user/get", params={"userid": userid})
+            if detail:
+                _remember(seen, detail, departments)
+            elif err:
+                last_error = err
+        for tag_id in (agent.get("allow_tags") or {}).get("tagid") or []:
+            tag, err = _optional("GET", "tag/get", params={"tagid": tag_id})
+            if err:
+                last_error = err
+                continue
+            for user in tag.get("userlist") or []:
+                _remember(seen, user, departments)
+            for department_id in tag.get("partylist") or []:
+                err = _pull_department(seen, department_id, departments)
+                if err:
+                    last_error = err
+
+    if not seen and last_error:
+        raise last_error
+    result = db.save_directory(list(seen.values()), replace=last_error is None)
+    if result["cached"] == 0:
+        result["message"] = "没有拉到人。到企业微信里把要提醒的人加进这个应用的可见范围。"
     else:
-        result["message"] = f"新增 {result['created']} 人，更新 {result['updated']} 人"
+        result["message"] = f"已缓存 {result['cached']} 人。添加人员时从这份名单里选。"
+        if last_error:
+            result["message"] += "有部分部门没拉下来，旧缓存还留着。"
+    return result
+
+
+def sync_directory_if_due():
+    from qyebot import leaves
+
+    settings = db.get_settings()
+    if not (settings.get("corp_id") and settings.get("agent_id") and settings.get("secret")):
+        return {"ran": False, "reason": "企业微信还没配置"}
+    now = datetime.now(ZoneInfo("Asia/Shanghai"))
+    failed_raw = (settings.get("directory_sync_fail_at") or "").strip()
+    if failed_raw.isdigit() and int(now.timestamp()) < int(failed_raw):
+        return {"ran": False, "reason": "上次同步失败，稍后再试"}
+    hour, minute = leaves.sync_clock(settings.get("leave_sync_time"))
+    due = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if now < due:
+        return {"ran": False, "reason": "还没到今天的同步时间"}
+    last_raw = (settings.get("directory_sync_at") or "").strip()
+    if last_raw.isdigit() and datetime.fromtimestamp(int(last_raw), ZoneInfo("Asia/Shanghai")) >= due:
+        return {"ran": False, "reason": "今天已经同步过"}
+    try:
+        result = sync_users()
+    except WeComError as exc:
+        db.set_settings({"directory_sync_fail_at": str(int(now.timestamp()) + 30 * 60)})
+        return {"ran": False, "reason": str(exc)}
+    db.set_settings({"directory_sync_at": str(int(now.timestamp())), "directory_sync_fail_at": ""})
+    result["ran"] = True
     return result
 
 

@@ -9,57 +9,33 @@ const {
   Switch,
   StatusPill,
   StatusBanner,
+  InfoTip,
   PageHeader,
   EmptyState,
   RuleCard,
   ScheduleCard,
+  askConfirm,
 } = window.BandianUI;
 
 const ROUTES = ["today", "people", "schedules", "logs", "connect", "login"];
 const META = {
   today: ["提醒管理", "设置上下班提醒时点、接收成员与重复催办策略，到点通过企业微信自建应用自动发送。"],
-  people: ["接收人员", "管理会收到企业微信上下班提醒的成员，支持手工添加或同步部门通讯录。"],
+  people: ["接收人员", "从每天缓存的企业微信成员里挑选。想立刻更新名单时，再点同步。"],
   schedules: ["作息班次", "配置默认上下班时间、适用工作日以及节假日放假与调休补班。"],
   logs: ["发送记录", "核对提醒消息是否已发出、因已打卡跳过或发送失败。"],
   connect: ["应用连接", "配置企业微信自建应用凭证，并向指定成员发送测试消息验证连通性。"],
 };
 
-const TOKEN_KEY = "qyekq_token";
-const USER_KEY = "qyekq_user";
-
-function token() {
-  return sessionStorage.getItem(TOKEN_KEY) || localStorage.getItem(TOKEN_KEY) || "";
-}
-
-function currentUser() {
-  return sessionStorage.getItem(USER_KEY) || localStorage.getItem(USER_KEY) || "qyekq";
-}
-
-function storeToken(value, remember, username) {
-  sessionStorage.removeItem(TOKEN_KEY);
-  localStorage.removeItem(TOKEN_KEY);
-  sessionStorage.removeItem(USER_KEY);
-  localStorage.removeItem(USER_KEY);
-  const store = remember ? localStorage : sessionStorage;
-  store.setItem(TOKEN_KEY, value);
-  store.setItem(USER_KEY, username || "qyekq");
-  paintUser();
-}
-
-function clearToken() {
-  sessionStorage.removeItem(TOKEN_KEY);
-  localStorage.removeItem(TOKEN_KEY);
-  sessionStorage.removeItem(USER_KEY);
-  localStorage.removeItem(USER_KEY);
-}
-
-function paintUser() {
-  const name = currentUser();
-  const label = document.querySelector("[data-user-name]");
-  const avatar = document.querySelector("[data-user]");
-  if (label) label.textContent = name;
-  if (avatar) avatar.textContent = name.slice(0, 1);
-}
+const state = {
+  route: "today",
+  data: null,
+  user: "",
+  authed: false,
+  logStatus: "",
+  logPage: 1,
+  logPageSize: 20,
+  lastFocus: null,
+};
 
 const LOG_STATUS = {
   waiting: ["未到点", ""],
@@ -70,18 +46,60 @@ const LOG_STATUS = {
   missed: ["已错过", ""],
 };
 
-const state = {
-  route: "today",
-  data: null,
-  logStatus: "",
-  lastFocus: null,
-};
+function paintUser() {
+  const name = state.user || "";
+  document.querySelectorAll("[data-user-name]").forEach((node) => {
+    node.textContent = name;
+  });
+  document.querySelectorAll("[data-user]").forEach((node) => {
+    node.textContent = name.slice(0, 1) || "";
+  });
+}
+
+function hexToBytes(hex) {
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i += 1) out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
+
+function bytesToHex(bytes) {
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function saltedPassword(username, password) {
+  const res = await fetch(`/api/auth/salt?username=${encodeURIComponent(username)}`, { credentials: "same-origin" });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.detail || "暂时不能登录");
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", salt: hexToBytes(data.salt), iterations: data.iterations, hash: "SHA-256" },
+    key,
+    256,
+  );
+  const digest = bytesToHex(new Uint8Array(bits));
+  const mac = await crypto.subtle.importKey("raw", new TextEncoder().encode(data.nonce), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signed = await crypto.subtle.sign("HMAC", mac, new TextEncoder().encode(digest));
+  return { password: bytesToHex(new Uint8Array(signed)), nonce: data.nonce };
+}
+
+async function refreshSession() {
+  const res = await fetch("/api/auth/session", { credentials: "same-origin" });
+  if (!res.ok) {
+    state.authed = false;
+    state.user = "";
+    paintUser();
+    return false;
+  }
+  const data = await res.json();
+  state.authed = true;
+  state.user = data.username || "";
+  paintUser();
+  return true;
+}
 
 async function api(path, options = {}) {
   const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
-  const current = token();
-  if (current) headers.Authorization = `Bearer ${current}`;
-  const res = await fetch("/api" + path, { ...options, headers });
+  const res = await fetch("/api" + path, { ...options, headers, credentials: "same-origin" });
   const text = await res.text();
   let data = null;
   try {
@@ -90,7 +108,8 @@ async function api(path, options = {}) {
     data = { detail: text };
   }
   if (res.status === 401) {
-    clearToken();
+    state.authed = false;
+    state.user = "";
     if ((location.hash || "") !== "#/login") location.hash = "#/login";
     throw new Error(typeof data?.detail === "string" ? data.detail : "请先登录");
   }
@@ -141,24 +160,43 @@ function renderReminders() {
     </section>`;
 }
 
+function departmentGroup(person) {
+  const parts = String(person.department || "").split(" / ").map((part) => part.trim()).filter(Boolean);
+  return { name: parts[0] || "未分组", extra: parts.slice(1).join(" / ") };
+}
+
 function renderPeople() {
   const items = state.data.items || [];
   const enabledCount = items.filter((p) => p.enabled).length;
-  const rows = items.map((person) => `<tr data-person-row data-q="${esc(`${person.name} ${person.userid} ${person.department}`.toLowerCase())}">
-    <td><div class="who"><b>${esc(person.name)}</b><span>${esc(person.department || "未填部门")}</span></div></td>
-    <td class="mono">${esc(person.userid)}</td>
-    <td class="mono">${esc(person.mobile || "—")}</td>
+  const people = [...items].sort((a, b) => {
+    const left = departmentGroup(a).name;
+    const right = departmentGroup(b).name;
+    if (left === "未分组" && right !== "未分组") return 1;
+    if (right === "未分组" && left !== "未分组") return -1;
+    const byDept = left.localeCompare(right, "zh");
+    if (byDept) return byDept;
+    return String(a.name).localeCompare(String(b.name), "zh");
+  });
+  const rows = people.map((person) => {
+    const group = departmentGroup(person);
+    const tags = group.name === "未分组"
+      ? `<span class="tag tag-muted">未分组</span>`
+      : `<span class="tag">${esc(group.name)}</span>${group.extra ? `<span class="tag tag-muted">兼 ${esc(group.extra)}</span>` : ""}`;
+    return `<tr data-person-row data-q="${esc(`${person.name} ${person.userid} ${person.department}`.toLowerCase())}">
+    <td><div class="who"><b>${esc(person.name)}</b></div></td>
+    <td><div class="dept-tags">${tags}</div></td>
     <td>${Switch({
       kind: "person",
       id: person.id,
       enabled: person.enabled,
       label: `${person.enabled ? "停用" : "启用"} ${person.name}`,
     })}</td>
-    <td><div class="row-actions">
+    <td class="row-actions-cell"><div class="row-actions">
       <button type="button" class="btn ghost sm" data-action="edit-person" data-id="${person.id}" aria-label="编辑 ${esc(person.name)}">${ICONS.edit}<span>编辑</span></button>
       <button type="button" class="btn ghost danger-hover sm" data-action="delete-person" data-id="${person.id}" data-name="${esc(person.name)}" aria-label="删除 ${esc(person.name)}">${ICONS.trash}<span>删除</span></button>
     </div></td>
-  </tr>`).join("");
+  </tr>`;
+  }).join("");
 
   return `
     ${PageHeader({
@@ -177,15 +215,15 @@ function renderPeople() {
     </div>` : ""}
     <article class="card card-table">
       ${items.length
-        ? `<div class="table-wrap"><table>
-            <thead><tr><th>成员</th><th>账号 UserId</th><th>手机号</th><th>接收提醒</th><th></th></tr></thead>
+        ? `<div class="table-wrap"><table class="people-table">
+            <thead><tr><th>成员</th><th>部门</th><th>接收提醒</th><th></th></tr></thead>
             <tbody>${rows}</tbody>
           </table></div>
           <p class="hint" data-people-empty hidden style="padding:18px 24px">没有匹配的成员。</p>`
         : EmptyState({
             icon: "users",
             title: "还没有接收人员",
-            description: "可以手工填入成员的企业微信 UserId，或在配置好自建应用后一键同步部门通讯录。",
+            description: "先同步或等到每天的自动同步，再从缓存名单里选择要提醒的人。",
             action: `<button type="button" class="btn primary" data-action="new-person">${ICONS.plus}<span>添加第一位成员</span></button>`,
           })}
     </article>`;
@@ -224,9 +262,8 @@ function renderSchedules() {
     <article class="card card-table" style="margin-top:24px">
       <div style="padding:18px 24px 8px">
         <div class="section-head" style="margin-bottom:4px">
-          <h2 class="section-title">节假日与调休补班</h2>
+          <h2 class="section-title">节假日与调休补班 ${InfoTip("标记为「放假」的日期不会发送提醒；周末如需上班，标记为「补班」即可按工作日规则正常提醒。")}</h2>
         </div>
-        <p class="section-desc">标记为「放假」的日期不会发送提醒；周末如需上班，标记为「补班」即可按工作日规则正常提醒。</p>
       </div>
       ${holidays.length
         ? `<div class="table-wrap" style="margin-top:8px"><table>
@@ -261,6 +298,24 @@ function renderLogs() {
     <td>${logStatusHtml(item.status)}</td>
     <td title="${esc(item.detail || "")}">${esc((item.detail || "—").slice(0, 48))}</td>
   </tr>`).join("");
+  const total = Number(state.data.total || 0);
+  const page = Number(state.data.page || 1);
+  const pages = Number(state.data.pages || 1);
+  const pageSize = Number(state.data.page_size || state.logPageSize);
+  const from = total ? (page - 1) * pageSize + 1 : 0;
+  const to = total ? Math.min(page * pageSize, total) : 0;
+  const sizeOptions = [20, 50, 100].map((size) => `<option value="${size}" ${size === pageSize ? "selected" : ""}>${size} 条/页</option>`).join("");
+  const pager = `<div class="pager">
+    <label class="pager-size">每页
+      <select data-action="log-page-size" aria-label="每页条数">${sizeOptions}</select>
+    </label>
+    <span class="pager-meta">${total ? `${from}–${to} / ${total}` : "共 0 条"}</span>
+    <div class="pager-nav">
+      <button type="button" class="btn quiet sm" data-action="log-page" data-page="${page - 1}" ${page <= 1 ? "disabled" : ""}>上一页</button>
+      <span>${page} / ${pages}</span>
+      <button type="button" class="btn quiet sm" data-action="log-page" data-page="${page + 1}" ${page >= pages ? "disabled" : ""}>下一页</button>
+    </div>
+  </div>`;
 
   return `
     ${PageHeader({
@@ -274,13 +329,28 @@ function renderLogs() {
         ? `<div class="table-wrap"><table>
             <thead><tr><th>接收人 / 规则</th><th>计划时点</th><th>结果</th><th>说明</th></tr></thead>
             <tbody>${rows}</tbody>
-          </table></div>`
+          </table></div>
+          ${pager}`
         : EmptyState({
             icon: "logs",
             title: state.logStatus ? "当前筛选下没有记录" : "还没有发送记录",
             description: state.logStatus ? "切换到「全部记录」查看其他状态的发送流水。" : "提醒规则到点触发或手动发送测试消息后，流水会显示在这里。",
           })}
     </article>`;
+}
+
+function leaveSyncNote(data) {
+  const raw = String(data.leave_sync_at || "");
+  if (!/^\d+$/.test(raw)) return "还没有成功拉取过。";
+  const text = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(new Date(Number(raw) * 1000));
+  return `上次成功拉取：${text}。`;
 }
 
 function renderConnect() {
@@ -302,30 +372,27 @@ function renderConnect() {
     <section class="split-grid">
       <article class="card">
         <div class="section-head">
-          <h2 class="section-title">企业微信自建应用凭证</h2>
+          <h2 class="section-title">企业微信自建应用凭证 ${InfoTip("自建应用需开启「发送应用消息」权限；跳过已打卡需「打卡」权限；同步成员需「通讯录读取」权限，并把本机出口 IP 加入可信 IP。同步会拉取这个应用可见范围内的全部人员。")}</h2>
           ${wecomPill}
         </div>
-        <p class="section-desc">自建应用需开启「发送应用消息」权限；如需自动跳过已打卡成员需开启「打卡」权限；同步成员需「通讯录读取」权限，并将本机出口 IP 加入企业微信可信 IP。</p>
         <form novalidate data-form="wecom" autocomplete="off" style="margin-top:20px">
           <label class="field">
             <span>企业 ID (CorpID)</span>
             <input name="corp_id" value="${esc(data.corp_id)}" placeholder="例如 ww1234567890abcdef" required autocomplete="off">
           </label>
-          <div class="grid-2">
-            <label class="field">
-              <span>应用 AgentId</span>
-              <input name="agent_id" value="${esc(data.agent_id)}" placeholder="例如 1000002" inputmode="numeric" required autocomplete="off">
-            </label>
-            <label class="field">
-              <span>同步根部门 ID</span>
-              <input name="sync_department_id" value="${esc(data.sync_department_id || "1")}" inputmode="numeric" required>
-            </label>
-          </div>
           <label class="field">
-            <span>应用 Secret</span>
+            <span>应用 AgentId</span>
+            <input name="agent_id" value="${esc(data.agent_id)}" placeholder="例如 1000002" inputmode="numeric" required autocomplete="off">
+          </label>
+          <label class="field">
+            <span>应用 Secret ${InfoTip("Secret 仅保存在本机 SQLite 数据库中，接口不回传明文。")}</span>
             <input name="secret" type="password" autocomplete="new-password" placeholder="${data.secret_set ? "已安全保存，留空表示不修改" : "粘贴自建应用 Secret"}">
           </label>
-          <p class="hint">${data.secret_set ? `当前已保存 Secret（末四位 ${esc(data.secret_hint)}）。` : "Secret 仅保存在本机 SQLite 数据库中，接口不回传明文。"} ${esc(data.last_test_message || "")}</p>
+          <label class="field">
+            <span>请假同步时间 ${InfoTip("按上海时间，每天到这个时刻增量拉取请假审批单，并刷新一次成员缓存。今天这个时刻已经过了、而且今天还没做过时，保存后下一轮检查就会做。手动点「同步企业微信成员」会立刻刷新缓存。")}</span>
+            <input name="leave_sync_time" type="time" value="${esc(data.leave_sync_time || "06:30")}" required>
+          </label>
+          <p class="hint">${esc(leaveSyncNote(data))}${data.secret_set ? ` 当前已保存 Secret（末四位 ${esc(data.secret_hint)}）。` : ""}${data.last_test_message ? ` ${esc(data.last_test_message)}` : ""}</p>
           <div class="sheet-actions" style="border-top:0;padding-top:4px;margin-top:14px">
             <button class="btn primary" type="submit">保存应用配置</button>
           </div>
@@ -334,9 +401,8 @@ function renderConnect() {
 
       <article class="card">
         <div class="section-head">
-          <h2 class="section-title">发送测试消息</h2>
+          <h2 class="section-title">发送测试消息 ${InfoTip("保存凭证并添加至少一位人员后，可向自己发送一条真实企业微信应用消息确认链路畅通。")}</h2>
         </div>
-        <p class="section-desc">保存凭证并添加至少一位人员后，可向自己发送一条真实企业微信应用消息确认链路畅通。</p>
         <form novalidate data-form="test" autocomplete="off" style="margin-top:20px">
           <label class="field">
             <span>接收人</span>
@@ -368,7 +434,6 @@ function renderLogin() {
       <label class="field"><span>密码</span><input name="password" type="password" required autocomplete="current-password"></label>
       <label class="remember"><input type="checkbox" name="remember"> 记住我</label>
       <button class="btn primary" type="submit">登录</button>
-      <button type="button" class="login-fill" data-action="fill-demo">填入本机账号</button>
     </form>
   </div>`;
 }
@@ -429,30 +494,67 @@ function trapSheetFocus(event) {
   }
 }
 
+function directoryChoices() {
+  const taken = new Set((state.data.items || []).map((person) => person.userid));
+  return (state.data.directory || []).filter((person) => person.userid && !taken.has(person.userid));
+}
+
+function directoryList() {
+  const choices = directoryChoices();
+  if (!(state.data.directory || []).length) {
+    return `<p class="hint">还没有成员缓存。先点「同步企业微信成员」，或等到每天的自动同步。</p>`;
+  }
+  if (!choices.length) return `<p class="hint">缓存里的人都已经添加了。</p>`;
+  const groups = new Map();
+  choices.forEach((person) => {
+    const group = departmentGroup(person);
+    if (!groups.has(group.name)) groups.set(group.name, []);
+    groups.get(group.name).push({ person, extra: group.extra });
+  });
+  const ordered = [...groups.entries()].sort((a, b) => {
+    if (a[0] === "未分组") return 1;
+    if (b[0] === "未分组") return -1;
+    return a[0].localeCompare(b[0], "zh");
+  });
+  const blocks = ordered.map(([name, members]) => {
+    const people = members.map(({ person, extra }) => `<label data-directory-person data-q="${esc(`${person.name} ${person.department}`.toLowerCase())}">
+      <input type="checkbox" name="userid" value="${esc(person.userid)}">
+      <span>${esc(person.name)}${extra ? `<span class="mono"> 兼 ${esc(extra)}</span>` : ""}</span>
+    </label>`).join("");
+    return `<div data-directory-group data-dept="${esc(name)}">
+      <label class="directory-head"><input type="checkbox" data-directory-all> ${esc(name)}<span>${members.length}</span></label>
+      ${people}
+    </div>`;
+  }).join("");
+  return `<label class="field"><span>搜索</span><input id="directory-q" type="search" placeholder="按姓名或部门筛选" autocomplete="off"></label>
+    <div class="directory-list">${blocks}</div>`;
+}
+
 function personForm(person) {
-  const row = person || { userid: "", name: "", department: "", mobile: "", enabled: true };
-  openSheet(person ? "编辑接收人员" : "添加接收人员", `
-    <form novalidate data-form="person" data-id="${person ? person.id : ""}" autocomplete="off">
+  if (!person) {
+    const choices = directoryChoices();
+    openSheet("添加接收人员", `
+      <form novalidate data-form="person" autocomplete="off">
+        ${directoryList()}
+        <div class="sheet-actions">
+          <button type="button" class="btn quiet" data-action="close-sheet">取消</button>
+          <button class="btn primary" type="submit" ${choices.length ? "" : "disabled"}>添加所选</button>
+        </div>
+      </form>`);
+    return;
+  }
+  openSheet("编辑接收人员", `
+    <form novalidate data-form="person" data-id="${person.id}" autocomplete="off">
+      <input type="hidden" name="userid" value="${esc(person.userid)}">
+      <input type="hidden" name="person_name" value="${esc(person.name)}">
+      <input type="hidden" name="department" value="${esc(person.department || "")}">
+      <p class="who"><b>${esc(person.name)}</b><span>${esc(person.department || "未分组")}</span></p>
       <label class="field">
-        <span>企业微信账号 (UserId)</span>
-        <input name="userid" required maxlength="64" value="${esc(row.userid)}" placeholder="例如 zhangsan（企业微信通讯录账号）" autocomplete="off">
+        <span>手机号（选填）</span>
+        <input name="mobile" maxlength="32" value="${esc(person.mobile || "")}" autocomplete="tel" inputmode="tel">
       </label>
-      <label class="field">
-        <span>姓名</span>
-        <input name="name" required maxlength="64" value="${esc(row.name)}" placeholder="例如 张三" autocomplete="name">
-      </label>
-      <div class="grid-2">
-        <label class="field">
-          <span>部门（选填）</span>
-          <input name="department" maxlength="120" value="${esc(row.department)}" placeholder="例如 研发部">
-        </label>
-        <label class="field">
-          <span>手机号（选填）</span>
-          <input name="mobile" maxlength="32" value="${esc(row.mobile)}" autocomplete="tel" inputmode="tel">
-        </label>
-      </div>
       <div class="choice">
-        <label><input type="checkbox" name="enabled" ${row.enabled ? "checked" : ""}> 启用该成员的上下班提醒</label>
+        <label><input type="checkbox" name="enabled" ${person.enabled ? "checked" : ""}> 启用该成员的上下班提醒</label>
       </div>
       <div class="sheet-actions">
         <button type="button" class="btn quiet" data-action="close-sheet">取消</button>
@@ -491,9 +593,8 @@ function scheduleForm(item) {
       </label>
       <div class="grid-2">
         <label class="field"><span>上班时间</span><input name="clock_in" type="time" required value="${esc(row.clock_in)}"></label>
-        <label class="field"><span>下班时间</span><input name="clock_out" type="time" required value="${esc(row.clock_out)}"></label>
+        <label class="field"><span>下班时间 ${InfoTip("下班时间需晚于当天上班时间，暂不支持跨零点班次。")}</span><input name="clock_out" type="time" required value="${esc(row.clock_out)}"></label>
       </div>
-      <p class="hint" style="margin:-6px 0 14px">下班时间需晚于当天上班时间（暂不支持跨零点班次）。</p>
       <fieldset class="field"><legend>工作日</legend><div class="days">${days}</div></fieldset>
       <label class="field"><span>时区</span><input name="timezone" value="${esc(row.timezone || "Asia/Shanghai")}"></label>
       <div class="choice">
@@ -536,7 +637,7 @@ function ruleForm(rule) {
     repeat_max: 1,
     grace_minutes: 20,
     require_not_checked: true,
-    template: "{name}，{clock_time} {kind}时间快到了（现在 {time}），记得打卡。",
+    template: "{name}，{clock_time} 的{kind}打卡快到了。现在是 {time}，打一下，免得待会忘记。",
     enabled: true,
   };
   const selected = new Set(row.target_ids || []);
@@ -563,11 +664,10 @@ function ruleForm(rule) {
           </select>
         </label>
         <label class="field">
-          <span>偏移分钟数</span>
+          <span>偏移分钟数 ${InfoTip("负数代表提前，0 代表准点，正数代表延后。例如 -15 表示提前 15 分钟。")}</span>
           <input name="offset_minutes" type="number" required value="${row.offset_minutes}">
         </label>
       </div>
-      <p class="hint" style="margin:-8px 0 14px">负数代表提前，0 代表准点，正数代表延后。例如 <code class="mono">-15</code> 表示提前 15 分钟。</p>
 
       <fieldset class="field">
         <legend>接收人员范围</legend>
@@ -585,7 +685,7 @@ function ruleForm(rule) {
 
       <div class="choice">
         <label><input type="checkbox" name="require_not_checked" ${row.require_not_checked ? "checked" : ""}> 查到企业微信已打卡记录则自动跳过</label>
-        <label><input type="checkbox" name="repeat_on" ${repeating ? "checked" : ""}> 未打卡时重复催办</label>
+        <label><input type="checkbox" name="repeat_on" ${repeating ? "checked" : ""}> 还没打卡时，过一会儿再提醒</label>
       </div>
 
       <div class="grid-2" data-repeat-fields ${repeating ? "" : "hidden"}>
@@ -599,9 +699,8 @@ function ruleForm(rule) {
       </label>
 
       <label class="field">
-        <span>消息模板</span>
+        <span>消息模板 ${InfoTip("支持变量：{name} {userid} {kind} {time} {clock_time} {date}")}</span>
         <textarea name="template" required maxlength="800">${esc(row.template)}</textarea>
-        <span class="hint">支持变量：<code class="mono">{name}</code> <code class="mono">{userid}</code> <code class="mono">{kind}</code> <code class="mono">{time}</code> <code class="mono">{clock_time}</code> <code class="mono">{date}</code></span>
         <div class="preview" data-preview>${esc(sampleMessage(row, state.data.schedule))}</div>
       </label>
 
@@ -626,7 +725,7 @@ function normalizeRoute(rawHash) {
 
 async function load() {
   state.route = normalizeRoute(location.hash);
-  const authed = Boolean(token());
+  const authed = await refreshSession();
   if (!authed && state.route !== "login") {
     location.hash = "#/login";
     return;
@@ -635,7 +734,6 @@ async function load() {
     location.hash = "#/today";
     return;
   }
-  document.body.classList.toggle("is-login", state.route === "login");
   document.querySelectorAll(".nav-item").forEach((link) => {
     if (link.dataset.route === state.route) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
@@ -643,40 +741,51 @@ async function load() {
   document.title = state.route === "login" ? "登录 · qyekq" : `${META[state.route][0]} · qyekq`;
 
   const view = document.getElementById("view");
+  let markup = "";
+  let syncSide = false;
   if (state.route === "login") {
-    view.innerHTML = renderLogin();
-    return;
-  }
-  try {
-    if (state.route === "today") {
-      const [dash, rules] = await Promise.all([api("/dashboard"), api("/rules")]);
-      state.data = {
-        ...dash,
-        rules: rules.items,
-        personnel: rules.personnel,
-        schedules: rules.schedules,
-      };
-    } else if (state.route === "people") {
-      state.data = await api("/personnel");
-    } else if (state.route === "schedules") {
-      const [schedules, people] = await Promise.all([api("/schedules"), api("/personnel")]);
-      state.data = { ...schedules, personnel: people.items };
-    } else if (state.route === "logs") {
-      const query = state.logStatus ? `?status=${state.logStatus}&limit=150` : "?limit=150";
-      state.data = await api("/logs" + query);
-    } else {
-      const [settings, people] = await Promise.all([api("/settings/wecom"), api("/personnel")]);
-      state.data = { ...settings, personnel: people.items };
+    markup = renderLogin();
+  } else {
+    try {
+      if (state.route === "today") {
+        const [dash, rules] = await Promise.all([api("/dashboard"), api("/rules")]);
+        state.data = {
+          ...dash,
+          rules: rules.items,
+          personnel: rules.personnel,
+          schedules: rules.schedules,
+        };
+      } else if (state.route === "people") {
+        state.data = await api("/personnel");
+      } else if (state.route === "schedules") {
+        const [schedules, people] = await Promise.all([api("/schedules"), api("/personnel")]);
+        state.data = { ...schedules, personnel: people.items };
+      } else if (state.route === "logs") {
+        const params = new URLSearchParams({
+          page: String(state.logPage),
+          page_size: String(state.logPageSize),
+        });
+        if (state.logStatus) params.set("status", state.logStatus);
+        state.data = await api(`/logs?${params}`);
+        state.logPage = state.data.page || 1;
+        state.logPageSize = state.data.page_size || state.logPageSize;
+      } else {
+        const [settings, people] = await Promise.all([api("/settings/wecom"), api("/personnel")]);
+        state.data = { ...settings, personnel: people.items };
+      }
+      markup = render();
+      syncSide = true;
+    } catch (err) {
+      markup = `<article class="card">${EmptyState({
+        icon: "plug",
+        title: "数据加载失败",
+        description: err.message || "无法连接本地后端接口，请确认 run.py 服务正在运行。",
+      })}</article>`;
     }
-    view.innerHTML = render();
-    syncSideIndicators();
-  } catch (err) {
-    view.innerHTML = `<article class="card">${EmptyState({
-      icon: "plug",
-      title: "数据加载失败",
-      description: err.message || "无法连接本地后端接口，请确认 run.py 服务正在运行。",
-    })}</article>`;
   }
+  document.body.classList.toggle("is-login", state.route === "login");
+  view.innerHTML = markup;
+  if (syncSide) syncSideIndicators();
 }
 
 function findById(list, id) {
@@ -689,31 +798,42 @@ async function onClick(event) {
   const action = target.dataset.action;
   const id = target.dataset.id;
   try {
-    if (action === "fill-demo") {
-      const form = document.querySelector("[data-form=login]");
-      if (!form) return;
-      form.username.value = "qyekq";
-      form.password.value = "qyekq";
-      form.password.focus();
-      return;
-    }
     if (action === "logout") {
-      clearToken();
+      await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" });
+      state.authed = false;
+      state.user = "";
       location.hash = "#/login";
+      if (state.route === "login") await load();
       return;
     }
     if (action === "close-sheet") closeSheet();
     else if (action === "new-person") personForm(null);
     else if (action === "edit-person") personForm(findById(state.data.items, id));
-    else if (action === "delete-person") await removeRow("personnel", id, target.dataset.name, "人员", "删除后该成员将不再收到任何上下班提醒。");
+    else if (action === "delete-person") await removeRow("personnel", id, target.dataset.name, {
+      title: "确认删除该成员？",
+      body: "删除后将无法接收后续的上下班提醒，且无法恢复。",
+      confirmLabel: "确认删除",
+    });
     else if (action === "new-schedule") scheduleForm(null);
     else if (action === "edit-schedule") scheduleForm(findById(state.data.items, id));
-    else if (action === "delete-schedule") await removeRow("schedules", id, target.dataset.name, "班次", "关联它的成员将回退到全员默认班次。");
+    else if (action === "delete-schedule") await removeRow("schedules", id, target.dataset.name, {
+      title: "确认删除该班次？",
+      body: `删除「${target.dataset.name || "该班次"}」后，正在使用它的成员会回到全员默认班次，这个班次无法恢复。`,
+      confirmLabel: "确认删除",
+    });
     else if (action === "new-holiday") holidayForm();
-    else if (action === "delete-holiday") await removeRow("holidays", id, target.dataset.name, "特殊日期", "");
+    else if (action === "delete-holiday") await removeRow("holidays", id, target.dataset.name, {
+      title: "确认删除该特殊日期？",
+      body: `删除「${target.dataset.name || "该日期"}」后，这一天不再按放假或调休处理，提醒会回到普通工作日规则，且无法恢复。`,
+      confirmLabel: "确认删除",
+    });
     else if (action === "new-rule") ruleForm(null);
     else if (action === "edit-rule") ruleForm(findById(state.data.rules, id) || findById(state.data.items, id));
-    else if (action === "delete-rule") await removeRow("rules", id, target.dataset.name, "提醒规则", "删除后对应时点将不再向成员发送提醒。");
+    else if (action === "delete-rule") await removeRow("rules", id, target.dataset.name, {
+      title: "确认删除该提醒规则？",
+      body: `删除「${target.dataset.name || "该规则"}」后，这个时点不再向成员发送提醒，这条规则的文案和重复策略也会一起消失，且无法恢复。`,
+      confirmLabel: "确认删除",
+    });
     else if (action === "toggle") await toggleItem(target);
     else if (action === "sync-people") await syncPeople(target);
     else if (action === "run-tick") await runTick(target);
@@ -722,6 +842,11 @@ async function onClick(event) {
     else if (action === "new-test") location.hash = "#/connect";
     else if (action === "filter-logs") {
       state.logStatus = target.dataset.status || "";
+      state.logPage = 1;
+      await load();
+    }
+    else if (action === "log-page") {
+      state.logPage = Number(target.dataset.page) || 1;
       await load();
     }
   } catch (err) {
@@ -729,9 +854,9 @@ async function onClick(event) {
   }
 }
 
-async function removeRow(path, id, name, label, detail) {
-  const promptText = detail ? `确认删除${label}「${name}」？\n${detail}` : `确认删除${label}「${name}」？`;
-  if (!confirm(promptText)) return;
+async function removeRow(path, id, name, copy) {
+  const ok = await askConfirm(copy);
+  if (!ok) return;
   await api(`/${path}/${id}`, { method: "DELETE" });
   toast(`已删除「${name}」`);
   await load();
@@ -766,8 +891,13 @@ async function syncPeople(button) {
 }
 
 async function runTick(button) {
-  if (state.data?.wecom?.configured && !confirm("立即执行一轮提醒检查？若当前正处于规则触发窗口内，会向未打卡成员发送真实企业微信消息。")) {
-    return;
+  if (state.data?.wecom?.configured) {
+    const ok = await askConfirm({
+      title: "立即执行一轮提醒检查？",
+      body: "若当前正处于规则触发窗口内，会向未打卡成员发送真实企业微信消息。",
+      confirmLabel: "确认检查",
+    });
+    if (!ok) return;
   }
   button.disabled = true;
   try {
@@ -782,8 +912,9 @@ async function runTick(button) {
 async function toggleScheduler(button) {
   button.disabled = true;
   try {
-    const enabled = !state.data.scheduler_enabled;
+    const enabled = !state.schedulerOn;
     await api("/settings/scheduler", { method: "PUT", body: JSON.stringify({ enabled }) });
+    setSideDots(enabled);
     toast(enabled ? "自动提醒已开启" : "自动提醒已暂停");
     await load();
   } finally {
@@ -813,31 +944,25 @@ function fieldMessage(input) {
 function clearFieldError(input) {
   const field = input.closest(".field");
   if (!field?.classList.contains("invalid")) return;
-  if (String(input.value || "").trim()) {
-    field.classList.remove("invalid");
-    field.querySelector(".field-error")?.remove();
-  }
+  if (String(input.value || "").trim()) field.classList.remove("invalid");
 }
 
 function validateForm(form) {
-  form.querySelectorAll(".field.invalid").forEach((field) => {
-    field.classList.remove("invalid");
-    field.querySelector(".field-error")?.remove();
-  });
+  form.querySelectorAll(".field-error").forEach((node) => node.remove());
+  form.querySelectorAll(".field.invalid").forEach((field) => field.classList.remove("invalid"));
   const missing = [...form.querySelectorAll("input, select, textarea")].filter((el) => {
     if (!el.required || el.disabled || el.type === "checkbox" || el.type === "radio") return false;
     return !String(el.value || "").trim();
   });
+  if (missing.length) void form.offsetWidth;
   missing.forEach((input) => {
     const field = input.closest(".field");
-    if (!field) return;
-    field.classList.add("invalid");
-    const note = document.createElement("p");
-    note.className = "field-error";
-    note.textContent = fieldMessage(input);
-    field.appendChild(note);
+    if (field) field.classList.add("invalid");
   });
-  if (missing[0]) missing[0].focus();
+  if (missing[0]) {
+    toast(fieldMessage(missing[0]));
+    missing[0].focus();
+  }
   return missing.length === 0;
 }
 
@@ -870,31 +995,46 @@ async function onSubmit(event) {
 }
 
 async function submitLogin(form) {
+  const username = form.username.value.trim();
+  const proof = await saltedPassword(username, form.password.value);
   const res = await fetch("/api/auth/login", {
     method: "POST",
+    credentials: "same-origin",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      username: form.username.value.trim(),
-      password: form.password.value,
+      username,
+      password: proof.password,
+      nonce: proof.nonce,
       remember: form.remember.checked,
     }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.detail || "账号或密码不对");
-  storeToken(data.token, form.remember.checked, data.username || form.username.value.trim());
+  state.authed = true;
+  state.user = data.username || username;
+  paintUser();
   location.hash = "#/today";
 }
 
 async function savePerson(form) {
-  const body = {
-    userid: form.userid.value.trim(),
-    name: form.name.value.trim(),
-    department: form.department.value.trim(),
-    mobile: form.mobile.value.trim(),
-    enabled: form.enabled.checked,
-  };
   const id = form.dataset.id;
-  await api(id ? `/personnel/${id}` : "/personnel", { method: id ? "PUT" : "POST", body: JSON.stringify(body) });
+  if (!id) {
+    const userids = [...form.querySelectorAll("input[name=userid]:checked")].map((node) => node.value);
+    if (!userids.length) throw new Error("先从缓存里选择要添加的人");
+    const result = await api("/personnel", { method: "POST", body: JSON.stringify({ userids }) });
+    toast(`已添加 ${result.added} 人`);
+    return;
+  }
+  await api(`/personnel/${id}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      userid: form.userid.value,
+      name: form.person_name.value,
+      department: form.department.value,
+      mobile: form.mobile.value.trim(),
+      enabled: form.enabled.checked,
+    }),
+  });
   toast("人员已保存");
 }
 
@@ -960,7 +1100,7 @@ async function saveWecom(form) {
       corp_id: form.corp_id.value.trim(),
       agent_id: form.agent_id.value.trim(),
       secret: form.secret.value.trim(),
-      sync_department_id: form.sync_department_id.value.trim() || "1",
+      leave_sync_time: form.leave_sync_time.value.trim(),
     }),
   });
   toast("企业微信配置已保存");
@@ -992,6 +1132,18 @@ function updateRulePreview(form) {
 
 function onChange(event) {
   const target = event.target;
+  if (target.matches("[data-action=log-page-size]")) {
+    state.logPageSize = Number(target.value) || 20;
+    state.logPage = 1;
+    load();
+    return;
+  }
+  if (target.matches("[data-directory-all]")) {
+    const group = target.closest("[data-directory-group]");
+    group?.querySelectorAll("input[name=userid]").forEach((box) => {
+      if (!box.closest("[data-directory-person]")?.hidden) box.checked = target.checked;
+    });
+  }
   if (target.name === "repeat_on") {
     const box = document.querySelector("[data-repeat-fields]");
     if (box) box.hidden = !target.checked;
@@ -1017,6 +1169,16 @@ function onChange(event) {
 
 function onInput(event) {
   if (event.target.closest(".field")) clearFieldError(event.target);
+  if (event.target.id === "directory-q") {
+    const query = event.target.value.trim().toLowerCase();
+    document.querySelectorAll("[data-directory-person]").forEach((row) => {
+      row.hidden = Boolean(query) && !row.dataset.q.includes(query);
+    });
+    document.querySelectorAll("[data-directory-group]").forEach((group) => {
+      group.hidden = ![...group.querySelectorAll("[data-directory-person]")].some((row) => !row.hidden);
+    });
+    return;
+  }
   if (event.target.id === "people-q") {
     const query = event.target.value.trim().toLowerCase();
     let visible = 0;
@@ -1035,10 +1197,16 @@ function onInput(event) {
 }
 
 function setSideDots(schedOn) {
+  state.schedulerOn = Boolean(schedOn);
   const schedText = document.querySelector("[data-sched]");
   const schedDot = document.querySelector("[data-side-sched-dot]");
-  if (schedText) schedText.textContent = schedOn ? "运行中" : "已暂停";
-  if (schedDot) schedDot.className = schedOn ? "pulse" : "pulse off";
+  const toggle = document.querySelector("[data-side-switch]");
+  if (schedText) schedText.textContent = state.schedulerOn ? "运行中" : "已暂停";
+  if (schedDot) schedDot.className = state.schedulerOn ? "pulse" : "pulse off";
+  if (toggle) {
+    toggle.setAttribute("aria-checked", state.schedulerOn ? "true" : "false");
+    toggle.setAttribute("aria-label", state.schedulerOn ? "暂停自动提醒" : "开启自动提醒");
+  }
 }
 
 function syncSideIndicators() {
@@ -1047,7 +1215,7 @@ function syncSideIndicators() {
 }
 
 async function health() {
-  if (!token()) return;
+  if (!state.authed) return;
   try {
     const data = await api("/health");
     setSideDots(Boolean(data.scheduler_enabled));
@@ -1056,7 +1224,33 @@ async function health() {
   }
 }
 
+function placeInfoTip(tip) {
+  const bubble = tip.querySelector(".info-tip-bubble");
+  if (!bubble) return;
+  const margin = 12;
+  bubble.style.left = "0px";
+  bubble.style.right = "auto";
+  const rect = bubble.getBoundingClientRect();
+  let shift = 0;
+  if (rect.right > window.innerWidth - margin) shift = rect.right - (window.innerWidth - margin);
+  if (rect.left - shift < margin) shift = rect.left - margin;
+  if (shift) bubble.style.left = `${-shift}px`;
+}
+
 function boot() {
+  localStorage.removeItem("qyekq_token");
+  localStorage.removeItem("qyekq_user");
+  sessionStorage.removeItem("qyekq_token");
+  sessionStorage.removeItem("qyekq_user");
+  document.addEventListener("pointerover", (event) => {
+    const tip = event.target.closest?.(".info-tip");
+    if (!tip || tip.contains(event.relatedTarget)) return;
+    placeInfoTip(tip);
+  });
+  document.addEventListener("focusin", (event) => {
+    const tip = event.target.closest?.(".info-tip");
+    if (tip) placeInfoTip(tip);
+  });
   document.addEventListener("click", onClick);
   document.addEventListener("submit", onSubmit);
   document.addEventListener("change", onChange);

@@ -57,6 +57,15 @@
   --err-border: rgba(239, 68, 68, 0.28);
   --err-text: #fca5a5;
 
+  /* 确认弹层。危险按钮的实心悬停比 rose-600 深一档，保证白字对比度。 */
+  --bg-modal: #18181b;
+  --bg-scrim: rgba(0, 0, 0, 0.6);
+  --shadow-modal: 0 24px 64px rgba(0, 0, 0, 0.55), 0 8px 24px rgba(0, 0, 0, 0.35);
+  --confirm-mark: #e3a06a;
+  --danger-soft: rgba(225, 29, 72, 0.8);
+  --danger-solid: #be123c;
+  --danger-on: #fff1f2;
+
   /* 圆角与阴影 (Radii & Depth) */
   --radius-sm: 8px;
   --radius-md: 10px;
@@ -401,6 +410,13 @@ a {
   margin-bottom: 24px;
 }
 
+.page-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .page-title {
   margin: 0;
   font-family: var(--font-display);
@@ -411,12 +427,82 @@ a {
   color: var(--text-primary);
 }
 
-.page-lede {
-  margin: 8px 0 0;
+.info-tip {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  vertical-align: middle;
+}
+
+.section-title .info-tip,
+.empty-box strong .info-tip,
+.field > span .info-tip {
+  margin-left: 6px;
+}
+
+.info-tip-btn {
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0 0 1px;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  background: transparent;
   color: var(--text-muted);
-  font-size: 14px;
-  line-height: 1.55;
-  max-width: 62ch;
+  font-family: Georgia, "Palatino Linotype", Palatino, serif;
+  font-style: italic;
+  font-weight: 600;
+  font-size: 11px;
+  line-height: 1;
+  letter-spacing: 0;
+  cursor: help;
+  display: inline-grid;
+  place-items: center;
+}
+
+.info-tip-btn:hover,
+.info-tip-btn:focus-visible {
+  color: var(--text-primary);
+  border-color: var(--text-secondary);
+  outline: none;
+}
+
+.info-tip-bubble {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  width: max-content;
+  max-width: min(320px, calc(100vw - 24px));
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-default);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-style: normal;
+  font-weight: 400;
+  font-size: 12.5px;
+  line-height: 1.5;
+  letter-spacing: 0;
+  text-align: left;
+  white-space: normal;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: 20;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.info-tip-below .info-tip-bubble {
+  bottom: auto;
+  top: calc(100% + 8px);
+}
+
+.info-tip:hover .info-tip-bubble,
+.info-tip:focus-within .info-tip-bubble {
+  opacity: 1;
+  visibility: visible;
 }
 
 .page-actions {
@@ -951,6 +1037,7 @@ a.status-pill:hover {
   align-items: center;
   justify-content: flex-end;
   gap: 6px;
+  transition: opacity 160ms var(--ease-out);
 }
 
 /* 搜索与筛选栏 (Search & Filter Chips) */
@@ -1007,6 +1094,44 @@ a.status-pill:hover {
   margin-bottom: 18px;
 }
 
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px 22px 16px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.pager-size {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.pager-size select {
+  width: auto;
+  min-height: 36px;
+  padding: 6px 28px 6px 10px;
+  font-size: 13px;
+}
+
+.pager-meta,
+.pager-nav span {
+  color: var(--text-muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pager-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .chip {
   display: inline-flex;
   align-items: center;
@@ -1061,6 +1186,43 @@ th {
   font-weight: 500;
   padding: 12px 22px;
   border-bottom: 1px solid var(--border-subtle);
+}
+
+.people-table th {
+  color: #8d8d96;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+.people-table td {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.people-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.dept-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.people-table .row-actions {
+  opacity: 0;
+}
+
+.people-table tbody tr:hover .row-actions,
+.people-table tbody tr:focus-within .row-actions {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .people-table .row-actions {
+    opacity: 1;
+  }
 }
 
 td {
@@ -1132,13 +1294,6 @@ tbody tr:hover {
   font-weight: 600;
   letter-spacing: -0.02em;
   color: var(--text-primary);
-}
-
-.section-desc {
-  margin: 6px 0 0;
-  font-size: 13.5px;
-  line-height: 1.55;
-  color: var(--text-muted);
 }
 
 /* 空状态 (Empty State) */
@@ -1252,22 +1407,17 @@ tbody tr:hover {
 .field.invalid input:not([type="checkbox"]):not([type="radio"]),
 .field.invalid select,
 .field.invalid textarea {
-  border-color: var(--err-border);
-  box-shadow: 0 0 0 3px var(--err-soft);
-  animation: field-shake 360ms var(--ease-out);
-}
-
-.field-error {
-  margin: 6px 0 0;
-  color: var(--err-text);
-  font-size: 12px;
-  line-height: 1.4;
+  border-color: rgba(244, 63, 94, 0.6);
+  box-shadow: 0 0 0 1px rgba(244, 63, 94, 0.3), 0 0 16px rgba(244, 63, 94, 0.18);
+  animation: field-shake 320ms var(--ease-out);
 }
 
 @keyframes field-shake {
   0%, 100% { transform: translateX(0); }
-  25% { transform: translateX(-3px); }
-  75% { transform: translateX(3px); }
+  22% { transform: translateX(-2px); }
+  44% { transform: translateX(1.5px); }
+  66% { transform: translateX(-1px); }
+  88% { transform: translateX(0.5px); }
 }
 
 .field > span, .field legend {
@@ -1299,6 +1449,10 @@ textarea {
   transition: border-color var(--duration) var(--ease-out), box-shadow var(--duration) var(--ease-out);
 }
 
+input[type="time"] {
+  max-width: 168px;
+}
+
 input::placeholder, textarea::placeholder {
   color: var(--text-subtle);
 }
@@ -1316,6 +1470,13 @@ textarea:focus {
   outline: none;
 }
 
+.field.invalid input:not([type="checkbox"]):not([type="radio"]):focus,
+.field.invalid select:focus,
+.field.invalid textarea:focus {
+  border-color: rgba(244, 63, 94, 0.6);
+  box-shadow: 0 0 0 1px rgba(244, 63, 94, 0.3), 0 0 16px rgba(244, 63, 94, 0.18);
+}
+
 .hint {
   margin: 6px 0 0;
   color: var(--text-subtle);
@@ -1328,6 +1489,45 @@ textarea:focus {
   flex-direction: column;
   gap: 4px;
   margin-bottom: 14px;
+}
+
+.directory-list {
+  max-height: 360px;
+  overflow-y: auto;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  margin-bottom: 8px;
+}
+
+.directory-list label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  padding: 0 12px;
+  font-size: 14px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.directory-head {
+  color: var(--text-primary);
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.directory-head span {
+  margin-left: 8px;
+  color: var(--text-subtle);
+  font-weight: 500;
+}
+
+.directory-list input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
 }
 
 .checks {
@@ -1514,7 +1714,10 @@ body.sheet-open {
     height: 28px;
   }
 
-  .brand-text em,
+  .brand-text em {
+    display: none;
+  }
+
   .side-foot {
     display: none;
   }
@@ -1711,24 +1914,6 @@ body.is-login .main {
   margin-top: 8px;
 }
 
-.login-fill {
-  display: block;
-  margin: 18px auto 0;
-  min-height: 32px;
-  padding: 4px 14px;
-  border-radius: var(--radius-pill);
-  border: 1px solid var(--border-default);
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.login-fill:hover {
-  color: var(--text-primary);
-  border-color: var(--border-strong);
-}
-
 @media (max-width: 800px) {
   body.is-login .main {
     padding: 32px 20px;
@@ -1772,4 +1957,205 @@ body.is-login .main {
   width: 16px;
   height: 16px;
   accent-color: var(--accent);
+}
+
+/* Hallmark · component: confirm-dialog · genre: modern-minimal · theme: existing tokens · states: 8 · contrast: pass · v2.0.0
+   waive: preview file · 确认框写进现有 app.css / components.js，不另开会被站点公开的预览页 */
+
+.confirm-dialog {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 24px;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  overflow: auto;
+}
+
+.confirm-dialog[open] {
+  display: grid;
+  place-items: center;
+}
+
+.confirm-dialog::backdrop {
+  background: transparent;
+}
+
+.confirm-scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-scrim);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  opacity: 1;
+  transition: opacity var(--duration) var(--ease-out);
+}
+
+.confirm-card {
+  position: relative;
+  z-index: 1;
+  width: min(28rem, 100%);
+  margin: auto;
+  padding: 24px;
+  background: var(--bg-modal);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-modal);
+  opacity: 1;
+  transform: scale(1);
+  transition:
+    opacity var(--duration) var(--ease-out),
+    transform var(--duration) var(--ease-out);
+}
+
+@starting-style {
+  .confirm-dialog[open] .confirm-scrim {
+    opacity: 0;
+  }
+
+  .confirm-dialog[open] .confirm-card {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+}
+
+.confirm-dialog.is-leaving .confirm-scrim,
+.confirm-dialog.is-leaving .confirm-card {
+  opacity: 0;
+}
+
+.confirm-dialog.is-leaving .confirm-card {
+  transform: scale(0.98);
+}
+
+.confirm-mark {
+  display: flex;
+  width: 18px;
+  height: 18px;
+  margin-bottom: 12px;
+  color: var(--confirm-mark);
+}
+
+.confirm-mark svg {
+  width: 18px;
+  height: 18px;
+}
+
+.confirm-card h2 {
+  margin: 0 0 8px;
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+  overflow-wrap: break-word;
+  min-width: 0;
+  text-wrap: balance;
+}
+
+.confirm-card p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 24px;
+}
+
+.btn.danger {
+  background: var(--danger-soft);
+  border-color: transparent;
+  color: var(--danger-on);
+  box-shadow: none;
+}
+
+.btn.danger:hover:not(:disabled),
+.btn.danger.is-hover {
+  background: var(--danger-solid);
+  border-color: transparent;
+}
+
+.btn.danger:focus-visible,
+.btn.danger.is-focus {
+  outline: 2px solid var(--accent-hover);
+  outline-offset: 2px;
+}
+
+.btn.danger:active:not(:disabled),
+.btn.danger.is-active {
+  background: var(--danger-solid);
+  transform: translateY(1px);
+}
+
+.btn.danger:disabled,
+.btn.danger.is-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.btn.danger.is-loading,
+.confirm-cancel.is-loading {
+  cursor: progress;
+}
+
+.btn.danger.is-error,
+.confirm-cancel.is-error {
+  box-shadow: 0 0 0 1px var(--err-border);
+}
+
+.btn.danger.is-success,
+.confirm-cancel.is-success {
+  background: var(--ok);
+  border-color: var(--ok);
+  color: var(--bg-canvas);
+}
+
+.confirm-cancel:hover:not(:disabled),
+.confirm-cancel.is-hover {
+  background: var(--bg-control);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.confirm-cancel:focus-visible,
+.confirm-cancel.is-focus {
+  outline: 2px solid var(--accent-hover);
+  outline-offset: 2px;
+}
+
+.confirm-cancel:active:not(:disabled),
+.confirm-cancel.is-active {
+  transform: translateY(1px);
+}
+
+.confirm-cancel:disabled,
+.confirm-cancel.is-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .confirm-scrim,
+  .confirm-card,
+  .btn.danger:active:not(:disabled),
+  .btn.danger.is-active,
+  .confirm-cancel:active:not(:disabled),
+  .confirm-cancel.is-active {
+    transform: none;
+    animation: none;
+    transition: none;
+  }
 }

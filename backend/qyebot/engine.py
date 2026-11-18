@@ -228,7 +228,7 @@ def build_board():
         "next": upcoming[0] if upcoming else None,
         "people": rows,
         "personnel_total": len(settings_people),
-        "recent": db.list_logs(8),
+        "recent": db.list_logs(page_size=8)["items"],
     }
 
 
@@ -274,6 +274,12 @@ def tick():
         leaves.sync_if_due()
     except Exception:
         log.exception("leave sync failed")
+    try:
+        from qyebot import wecom
+
+        wecom.sync_directory_if_due()
+    except Exception:
+        log.exception("directory sync failed")
     lock = cache.acquire_lock()
     if lock is False:
         result = {"sent": 0, "skipped": 0, "failed": 0, "reason": "上一轮还在跑"}

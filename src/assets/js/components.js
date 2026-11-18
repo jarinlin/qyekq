@@ -185,14 +185,25 @@ function StatusBanner(data) {
   </section>`;
 }
 
+let infoSeq = 0;
+
+function InfoTip(text, place) {
+  const id = `info-${++infoSeq}`;
+  const below = place === "below" ? " info-tip-below" : "";
+  return `<span class="info-tip${below}">
+    <button type="button" class="info-tip-btn" aria-label="说明" aria-describedby="${id}">i</button>
+    <span class="info-tip-bubble" id="${id}" role="tooltip">${esc(text)}</span>
+  </span>`;
+}
+
 /**
  * 页头组件
  */
 function PageHeader({ title, subtitle, actions = "" }) {
   return `<header class="page-head">
-    <div>
+    <div class="page-title-row">
       <h1 class="page-title">${esc(title)}</h1>
-      <p class="page-lede">${esc(subtitle)}</p>
+      ${subtitle ? InfoTip(subtitle, "below") : ""}
     </div>
     ${actions ? `<div class="page-actions">${actions}</div>` : ""}
   </header>`;
@@ -204,8 +215,7 @@ function PageHeader({ title, subtitle, actions = "" }) {
 function EmptyState({ icon = "bell", title, description, action = "" }) {
   return `<div class="empty-box">
     <div class="empty-icon">${ICONS[icon] || ICONS.bell}</div>
-    <strong>${esc(title)}</strong>
-    <p>${esc(description)}</p>
+    <strong>${esc(title)}${description ? InfoTip(description) : ""}</strong>
     ${action ? `<div style="margin-top:8px">${action}</div>` : ""}
   </div>`;
 }
@@ -302,9 +312,96 @@ function ScheduleCard(item) {
   </article>`;
 }
 
+function askConfirm({ title, body, confirmLabel = "确认", danger = true } = {}) {
+  return new Promise((resolve) => {
+    const previous = document.activeElement;
+    const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const titleId = `confirm-title-${stamp}`;
+    const bodyId = `confirm-body-${stamp}`;
+    const dialog = document.createElement("dialog");
+    dialog.className = "confirm-dialog";
+    dialog.setAttribute("aria-labelledby", titleId);
+    dialog.setAttribute("aria-describedby", bodyId);
+    dialog.innerHTML = `
+      <div class="confirm-scrim" data-confirm="cancel"></div>
+      <div class="confirm-card">
+        <span class="confirm-mark" aria-hidden="true">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M8 2.4 14.2 13.4H1.8L8 2.4Z"/>
+            <path d="M8 6.3v3.1"/>
+            <path d="M8 11.55h.01"/>
+          </svg>
+        </span>
+        <h2 id="${titleId}"></h2>
+        <p id="${bodyId}"></p>
+        <div class="confirm-actions">
+          <button type="button" class="btn quiet confirm-cancel" data-confirm="cancel">取消</button>
+          <button type="button" class="btn ${danger ? "danger confirm-go" : "primary confirm-go"}" data-confirm="ok"></button>
+        </div>
+      </div>`;
+    dialog.querySelector("h2").textContent = title || "";
+    dialog.querySelector("p").textContent = body || "";
+    dialog.querySelector(".confirm-go").textContent = confirmLabel || "确认";
+    document.body.appendChild(dialog);
+
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    let settled = false;
+    const onKey = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        finish(false);
+        return;
+      }
+      if (event.key !== "Enter" || event.repeat) return;
+      event.preventDefault();
+      finish(true);
+    };
+    const finish = (accepted) => {
+      if (settled) return;
+      settled = true;
+      document.removeEventListener("keydown", onKey, true);
+      dialog.querySelectorAll("button").forEach((button) => {
+        button.disabled = true;
+      });
+      const close = () => {
+        if (dialog.open) dialog.close();
+        dialog.remove();
+        if (previous instanceof HTMLElement && document.contains(previous)) previous.focus();
+        resolve(Boolean(accepted));
+      };
+      if (reduceMotion) {
+        close();
+        return;
+      }
+      dialog.classList.add("is-leaving");
+      window.setTimeout(close, 200);
+    };
+    dialog.addEventListener("cancel", (event) => {
+      event.preventDefault();
+      finish(false);
+    });
+    dialog.addEventListener("click", (event) => {
+      if (event.target === dialog) {
+        finish(false);
+        return;
+      }
+      const hit = event.target.closest("[data-confirm]");
+      if (!hit || !dialog.contains(hit)) return;
+      finish(hit.dataset.confirm === "ok");
+    });
+    document.addEventListener("keydown", onKey, true);
+
+    dialog.showModal();
+    dialog.querySelector(".confirm-cancel").focus();
+    if (reduceMotion) dialog.classList.add("is-shown");
+    else requestAnimationFrame(() => dialog.classList.add("is-shown"));
+  });
+}
+
 window.BandianUI = {
   esc,
   ICONS,
+  askConfirm,
   kindLabel,
   offsetLabel,
   weekdayLabel,
@@ -314,6 +411,7 @@ window.BandianUI = {
   Switch,
   StatusPill,
   StatusBanner,
+  InfoTip,
   PageHeader,
   EmptyState,
   RuleCard,

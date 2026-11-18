@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import mimetypes
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
@@ -9,12 +10,15 @@ from fastapi.staticfiles import StaticFiles
 
 from qyebot import db, engine
 from qyebot.api import router
-from qyebot.auth import ensure_auth, token_ok
+from qyebot.auth import COOKIE, ensure_auth, token_ok
 from qyebot.config import SRC
 from qyebot.wecom import WeComError
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("qyebot")
+mimetypes.add_type("text/css", ".css")
+mimetypes.add_type("application/javascript", ".js")
+mimetypes.add_type("image/svg+xml", ".svg")
 
 
 async def _loop():
@@ -41,7 +45,7 @@ async def lifespan(_app):
             await task
 
 
-app = FastAPI(title="qyekq", lifespan=lifespan)
+app = FastAPI(title="qyekq", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 app.include_router(router, prefix="/api")
 
 
@@ -58,10 +62,14 @@ async def wecom_error(_request, exc):
 @app.middleware("http")
 async def no_cache_ui(request, call_next):
     path = request.url.path
-    if path.startswith("/api") and path != "/api/auth/login":
-        if not token_ok(request.headers.get("authorization")):
+    if path.startswith("/api") and path not in {"/api/auth/login", "/api/auth/salt", "/api/auth/logout"}:
+        if not token_ok(request.cookies.get(COOKIE)):
             return JSONResponse(status_code=401, content={"detail": "请先登录"})
     response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
     if path == "/" or path.startswith("/assets"):
         response.headers["Cache-Control"] = "no-cache"
     return response

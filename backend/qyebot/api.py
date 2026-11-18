@@ -2,11 +2,11 @@ import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from qyebot import db, engine, wecom
-from qyebot.auth import check_password, issue_token
+from qyebot import db, engine, leaves, wecom
+from qyebot.auth import COOKIE, ITERATIONS, check_proof, issue_nonce, issue_token, login_blocked, note_login, revoke_session, salt_for
 
 router = APIRouter()
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
@@ -16,9 +16,13 @@ DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 class PersonnelIn(BaseModel):
     userid: str = Field(min_length=1, max_length=64)
     name: str = Field(min_length=1, max_length=64)
-    department: str = Field(default="", max_length=120)
+    department: str = Field(default="", max_length=400)
     mobile: str = Field(default="", max_length=32)
     enabled: bool = True
+
+
+class DirectoryAddIn(BaseModel):
+    userids: list[str] = Field(min_length=1)
 
 
 class EnabledIn(BaseModel):
@@ -62,7 +66,7 @@ class WecomIn(BaseModel):
     corp_id: str = Field(min_length=1, max_length=64)
     agent_id: str = Field(min_length=1, max_length=16)
     secret: str = ""
-    sync_department_id: str = "1"
+    leave_sync_time: str = "06:30"
 
 
 class SchedulerIn(BaseModel):
@@ -162,6 +166,16 @@ def _prepare_rule(body: RuleIn):
     return data
 
 
+def _clock(value):
+    parts = (value or "").strip().split(":")
+    if len(parts) < 2 or not parts[0].isdigit() or not parts[1].isdigit():
+        raise HTTPException(400, "请假同步时间要写成 时:分")
+    hour, minute = int(parts[0]), int(parts[1])
+    if hour > 23 or minute > 59:
+        raise HTTPException(400, "请假同步时间要写成 时:分")
+    return f"{hour:02d}:{minute:02d}"
+
+
 def _public_wecom():
     settings = db.get_settings()
     secret = settings.get("secret") or ""
@@ -171,7 +185,8 @@ def _public_wecom():
         "agent_id": settings.get("agent_id") or "",
         "secret_set": bool(secret),
         "secret_hint": secret[-4:] if len(secret) >= 4 else "",
-        "sync_department_id": settings.get("sync_department_id") or "1",
+        "leave_sync_time": leaves.format_sync_clock(settings.get("leave_sync_time")),
+        "leave_sync_at": settings.get("leave_sync_at") or "",
         "last_test_ok": True if tested == "1" else False if tested == "0" else None,
         "last_test_at": settings.get("last_test_at") or "",
         "last_test_message": settings.get("last_test_message") or "",
@@ -182,15 +197,55 @@ def _public_wecom():
 
 class LoginIn(BaseModel):
     username: str = Field(min_length=1, max_length=64)
-    password: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=64, max_length=64)
+    nonce: str = Field(min_length=16, max_length=64)
     remember: bool = False
 
 
+def _set_session(response: Response, request: Request, token: str, ttl: int, remember: bool):
+    response.set_cookie(
+        COOKIE,
+        token,
+        max_age=ttl if remember else None,
+        httponly=True,
+        samesite="lax",
+        secure=request.url.scheme == "https",
+        path="/",
+    )
+
+
+@router.get("/auth/salt")
+def auth_salt(username: str = ""):
+    name = username.strip()
+    if login_blocked(name):
+        raise HTTPException(status_code=429, detail="试得太勤，请稍后再试")
+    return {"salt": salt_for(name), "iterations": ITERATIONS, "nonce": issue_nonce()}
+
+
 @router.post("/auth/login")
-def login(body: LoginIn):
-    if not check_password(body.username.strip(), body.password):
+def login(body: LoginIn, request: Request, response: Response):
+    name = body.username.strip()
+    if login_blocked(name):
+        raise HTTPException(status_code=429, detail="试得太勤，请稍后再试")
+    if not check_proof(name, body.password.strip().lower(), body.nonce.strip()):
+        note_login(name, False)
         raise HTTPException(status_code=401, detail="账号或密码不对")
-    return {"token": issue_token(body.remember), "username": body.username.strip()}
+    note_login(name, True)
+    token, ttl = issue_token(body.remember)
+    _set_session(response, request, token, ttl, body.remember)
+    return {"username": name}
+
+
+@router.post("/auth/logout")
+def logout(response: Response):
+    revoke_session()
+    response.delete_cookie(COOKIE, path="/")
+    return {"ok": True}
+
+
+@router.get("/auth/session")
+def auth_session():
+    return {"username": db.get_settings().get("auth_user") or ""}
 
 
 @router.get("/health")
@@ -226,9 +281,7 @@ def put_wecom(body: WecomIn):
     agent_id = body.agent_id.strip()
     if not agent_id.isdigit():
         raise HTTPException(400, "AgentId 应该是数字")
-    department_id = (body.sync_department_id or "1").strip()
-    if not department_id.isdigit():
-        raise HTTPException(400, "部门 ID 应该是数字")
+    leave_sync_time = _clock(body.leave_sync_time)
     current = db.get_settings()
     secret = body.secret.strip()
     if not secret:
@@ -240,7 +293,7 @@ def put_wecom(body: WecomIn):
             "corp_id": corp_id,
             "agent_id": agent_id,
             "secret": secret,
-            "sync_department_id": department_id,
+            "leave_sync_time": leave_sync_time,
         }
     )
     from qyebot import cache
@@ -280,29 +333,26 @@ def run_tick():
 
 @router.get("/personnel")
 def get_personnel():
-    return {"items": db.list_personnel()}
+    return {"items": db.list_personnel(), "directory": db.list_directory()}
 
 
 @router.post("/personnel")
-def post_personnel(body: PersonnelIn):
-    data = body.model_dump()
-    data["userid"] = body.userid.strip()
-    data["name"] = body.name.strip()
-    if not data["userid"] or not data["name"]:
-        raise HTTPException(400, "账号和姓名都要填")
-    try:
-        return db.create_person(data)
-    except Exception as exc:
-        if "UNIQUE" in str(exc):
-            raise HTTPException(400, "这个账号已经有了") from exc
-        raise
+def post_personnel(body: DirectoryAddIn):
+    result = db.add_from_directory(body.userids)
+    if result["added"] == 0:
+        raise HTTPException(400, "缓存里没有可添加的新人")
+    return result
 
 
 @router.put("/personnel/{person_id}")
 def put_personnel(person_id: int, body: PersonnelIn):
+    current = db.get_person(person_id)
+    if not current:
+        _missing("人员")
     data = body.model_dump()
-    data["userid"] = body.userid.strip()
-    data["name"] = body.name.strip()
+    data["userid"] = current["userid"]
+    data["name"] = current["name"]
+    data["department"] = current["department"]
     try:
         row = db.update_person(person_id, data)
     except Exception as exc:
@@ -331,9 +381,15 @@ def remove_personnel(person_id: int):
 @router.post("/personnel/sync")
 def sync_personnel():
     try:
-        return wecom.sync_users()
+        result = wecom.sync_users()
     except wecom.WeComError as exc:
+        db.set_settings({"directory_sync_fail_at": str(int(datetime.now(ZoneInfo("Asia/Shanghai")).timestamp()) + 30 * 60)})
         raise HTTPException(502, str(exc)) from exc
+    db.set_settings({
+        "directory_sync_at": str(int(datetime.now(ZoneInfo("Asia/Shanghai")).timestamp())),
+        "directory_sync_fail_at": "",
+    })
+    return result
 
 
 @router.get("/schedules")
@@ -430,11 +486,12 @@ def remove_holiday(holiday_id: int):
 
 
 @router.get("/logs")
-def get_logs(limit: int = 100, status: str = ""):
+def get_logs(page: int = 1, page_size: int = 20, status: str = ""):
     if status and status not in {"sent", "skipped", "failed"}:
         raise HTTPException(400, "状态不对")
-    limit = min(max(limit, 1), 200)
-    return {"items": db.list_logs(limit, status or None)}
+    if page_size not in {20, 50, 100}:
+        page_size = 20
+    return db.list_logs(page, page_size, status or None)
 
 
 @router.post("/messages/test")
