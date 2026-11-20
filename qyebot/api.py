@@ -488,12 +488,13 @@ def remove_holiday(holiday_id: int):
 
 
 @router.get("/logs")
-def get_logs(page: int = 1, page_size: int = 20, status: str = ""):
+def get_logs(page: int = 1, page_size: int = 10, status: str = "", q: str = ""):
     if status and status not in {"sent", "skipped", "failed"}:
         raise HTTPException(400, "状态不对")
-    if page_size not in {20, 50, 100}:
-        page_size = 20
-    return db.list_logs(page, page_size, status or None)
+    if page_size not in {10, 20, 50, 100}:
+        page_size = 10
+    q = q.strip()[:80]
+    return db.list_logs(page, page_size, status or None, q or None)
 
 
 @router.post("/messages/test")

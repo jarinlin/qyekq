@@ -32,8 +32,14 @@ const state = {
   user: "",
   authed: false,
   logStatus: "",
+  logQuery: "",
+  logQueryFocus: false,
   logPage: 1,
-  logPageSize: 20,
+  logPageSize: 10,
+  peopleQuery: "",
+  peopleQueryFocus: false,
+  peoplePage: 1,
+  peoplePageSize: 10,
   lastFocus: null,
 };
 
@@ -165,9 +171,27 @@ function departmentGroup(person) {
   return { name: parts[0] || "未分组", extra: parts.slice(1).join(" / ") };
 }
 
+function peoplePager(total, page, pages, pageSize) {
+  const from = total ? (page - 1) * pageSize + 1 : 0;
+  const to = total ? Math.min(page * pageSize, total) : 0;
+  const sizeOptions = [10, 20, 50, 100].map((size) => `<option value="${size}" ${size === pageSize ? "selected" : ""}>${size} 条/页</option>`).join("");
+  return `<div class="pager">
+    <label class="pager-size">每页
+      <select data-action="people-page-size" aria-label="每页条数">${sizeOptions}</select>
+    </label>
+    <span class="pager-meta">${total ? `${from}–${to} / ${total}` : "共 0 条"}</span>
+    <div class="pager-nav">
+      <button type="button" class="btn quiet sm" data-action="people-page" data-page="${page - 1}" ${page <= 1 ? "disabled" : ""}>上一页</button>
+      <span>${page} / ${pages}</span>
+      <button type="button" class="btn quiet sm" data-action="people-page" data-page="${page + 1}" ${page >= pages ? "disabled" : ""}>下一页</button>
+    </div>
+  </div>`;
+}
+
 function renderPeople() {
   const items = state.data.items || [];
   const enabledCount = items.filter((p) => p.enabled).length;
+  const query = state.peopleQuery.trim().toLowerCase();
   const people = [...items].sort((a, b) => {
     const left = departmentGroup(a).name;
     const right = departmentGroup(b).name;
@@ -176,13 +200,19 @@ function renderPeople() {
     const byDept = left.localeCompare(right, "zh");
     if (byDept) return byDept;
     return String(a.name).localeCompare(String(b.name), "zh");
-  });
-  const rows = people.map((person) => {
+  }).filter((person) => !query || `${person.name} ${person.userid} ${person.department}`.toLowerCase().includes(query));
+  const pageSize = state.peoplePageSize;
+  const pages = Math.max(Math.ceil(people.length / pageSize) || 1, 1);
+  if (state.peoplePage > pages) state.peoplePage = pages;
+  if (state.peoplePage < 1) state.peoplePage = 1;
+  const page = state.peoplePage;
+  const visible = people.slice((page - 1) * pageSize, page * pageSize);
+  const rows = visible.map((person) => {
     const group = departmentGroup(person);
     const tags = group.name === "未分组"
       ? `<span class="tag tag-muted">未分组</span>`
       : `<span class="tag">${esc(group.name)}</span>${group.extra ? `<span class="tag tag-muted">兼 ${esc(group.extra)}</span>` : ""}`;
-    return `<tr data-person-row data-q="${esc(`${person.name} ${person.userid} ${person.department}`.toLowerCase())}">
+    return `<tr>
     <td><div class="who"><b>${esc(person.name)}</b></div></td>
     <td><div class="dept-tags">${tags}</div></td>
     <td>${Switch({
@@ -209,18 +239,24 @@ function renderPeople() {
     ${items.length ? `<div class="toolbar">
       <div class="search-wrap">
         ${ICONS.search}
-        <input class="search-input" id="people-q" type="search" placeholder="搜索姓名、UserId 或部门..." aria-label="搜索人员" autocomplete="off">
+        <input class="search-input" id="people-q" type="search" value="${esc(state.peopleQuery)}" placeholder="搜索姓名、UserId 或部门..." aria-label="搜索人员" autocomplete="off">
       </div>
-      <span class="hint" style="margin:0">共 ${items.length} 人，${enabledCount} 人启用中</span>
+      <span class="hint" style="margin:0">${query ? `匹配 ${people.length} 人` : `共 ${items.length} 人，${enabledCount} 人启用中`}</span>
     </div>` : ""}
     <article class="card card-table">
-      ${items.length
+      ${visible.length
         ? `<div class="table-wrap"><table class="people-table">
             <thead><tr><th>成员</th><th>部门</th><th>接收提醒</th><th></th></tr></thead>
             <tbody>${rows}</tbody>
           </table></div>
-          <p class="hint" data-people-empty hidden style="padding:18px 24px">没有匹配的成员。</p>`
-        : EmptyState({
+          ${peoplePager(people.length, page, pages, pageSize)}`
+        : items.length
+          ? EmptyState({
+              icon: "users",
+              title: "没有匹配的成员",
+              description: "换个姓名、UserId 或部门再搜。",
+            })
+          : EmptyState({
             icon: "users",
             title: "还没有接收人员",
             description: "先同步或等到每天的自动同步，再从缓存名单里选择要提醒的人。",
@@ -304,7 +340,7 @@ function renderLogs() {
   const pageSize = Number(state.data.page_size || state.logPageSize);
   const from = total ? (page - 1) * pageSize + 1 : 0;
   const to = total ? Math.min(page * pageSize, total) : 0;
-  const sizeOptions = [20, 50, 100].map((size) => `<option value="${size}" ${size === pageSize ? "selected" : ""}>${size} 条/页</option>`).join("");
+  const sizeOptions = [10, 20, 50, 100].map((size) => `<option value="${size}" ${size === pageSize ? "selected" : ""}>${size} 条/页</option>`).join("");
   const pager = `<div class="pager">
     <label class="pager-size">每页
       <select data-action="log-page-size" aria-label="每页条数">${sizeOptions}</select>
@@ -323,7 +359,13 @@ function renderLogs() {
       subtitle: META.logs[1],
       actions: `<button type="button" class="btn quiet" data-action="new-test">${ICONS.send}<span>发一条测试消息</span></button>`,
     })}
-    <div class="filters" role="group" aria-label="按发送状态筛选">${chips}</div>
+    <div class="toolbar">
+      <div class="search-wrap">
+        ${ICONS.search}
+        <input class="search-input" id="logs-q" type="search" value="${esc(state.logQuery)}" placeholder="搜索接收人、规则或说明" aria-label="搜索发送记录" autocomplete="off">
+      </div>
+      <div class="filters" role="group" aria-label="按发送状态筛选">${chips}</div>
+    </div>
     <article class="card card-table">
       ${items.length
         ? `<div class="table-wrap"><table>
@@ -333,8 +375,8 @@ function renderLogs() {
           ${pager}`
         : EmptyState({
             icon: "logs",
-            title: state.logStatus ? "当前筛选下没有记录" : "还没有发送记录",
-            description: state.logStatus ? "切换到「全部记录」查看其他状态的发送流水。" : "提醒规则到点触发或手动发送测试消息后，流水会显示在这里。",
+            title: state.logQuery || state.logStatus ? "没有匹配的记录" : "还没有发送记录",
+            description: state.logQuery || state.logStatus ? "换个关键词，或切回「全部记录」。" : "提醒规则到点触发或手动发送测试消息后，流水会显示在这里。",
           })}
     </article>`;
 }
@@ -812,6 +854,7 @@ async function load() {
           page_size: String(state.logPageSize),
         });
         if (state.logStatus) params.set("status", state.logStatus);
+        if (state.logQuery.trim()) params.set("q", state.logQuery.trim());
         state.data = await api(`/logs?${params}`);
         state.logPage = state.data.page || 1;
         state.logPageSize = state.data.page_size || state.logPageSize;
@@ -831,7 +874,28 @@ async function load() {
   }
   document.body.classList.toggle("is-login", state.route === "login");
   view.innerHTML = markup;
+  focusKeptInputs();
   if (syncSide) syncSideIndicators();
+}
+
+function focusKeptInputs() {
+  const logsQuery = document.getElementById("logs-q");
+  if (logsQuery && state.logQueryFocus) {
+    logsQuery.focus();
+    const end = logsQuery.value.length;
+    logsQuery.setSelectionRange(end, end);
+  }
+  const peopleQuery = document.getElementById("people-q");
+  if (peopleQuery && state.peopleQueryFocus) {
+    peopleQuery.focus();
+    const end = peopleQuery.value.length;
+    peopleQuery.setSelectionRange(end, end);
+  }
+}
+
+function repaintPeople() {
+  document.getElementById("view").innerHTML = renderPeople();
+  focusKeptInputs();
 }
 
 function findById(list, id) {
@@ -891,13 +955,20 @@ async function onClick(event) {
     else if (action === "test-wecom") await testWecom(target);
     else if (action === "new-test") location.hash = "#/connect";
     else if (action === "filter-logs") {
+      state.logQueryFocus = false;
       state.logStatus = target.dataset.status || "";
       state.logPage = 1;
       await load();
     }
     else if (action === "log-page") {
+      state.logQueryFocus = false;
       state.logPage = Number(target.dataset.page) || 1;
       await load();
+    }
+    else if (action === "people-page") {
+      state.peopleQueryFocus = false;
+      state.peoplePage = Number(target.dataset.page) || 1;
+      repaintPeople();
     }
   } catch (err) {
     toast(err.message || "操作未能完成");
@@ -1193,8 +1264,16 @@ function updateRulePreview(form) {
 
 function onChange(event) {
   const target = event.target;
+  if (target.matches("[data-action=people-page-size]")) {
+    state.peopleQueryFocus = false;
+    state.peoplePageSize = Number(target.value) || 10;
+    state.peoplePage = 1;
+    repaintPeople();
+    return;
+  }
   if (target.matches("[data-action=log-page-size]")) {
-    state.logPageSize = Number(target.value) || 20;
+    state.logQueryFocus = false;
+    state.logPageSize = Number(target.value) || 10;
     state.logPage = 1;
     load();
     return;
@@ -1230,6 +1309,16 @@ function onChange(event) {
 
 function onInput(event) {
   if (event.target.closest(".field")) clearFieldError(event.target);
+  if (event.target.id === "logs-q") {
+    state.logQuery = event.target.value;
+    state.logQueryFocus = true;
+    clearTimeout(onInput.logTimer);
+    onInput.logTimer = setTimeout(() => {
+      state.logPage = 1;
+      load();
+    }, 280);
+    return;
+  }
   if (event.target.id === "directory-q") {
     const query = event.target.value.trim().toLowerCase();
     document.querySelectorAll("[data-directory-group]").forEach((group) => {
@@ -1254,15 +1343,11 @@ function onInput(event) {
     return;
   }
   if (event.target.id === "people-q") {
-    const query = event.target.value.trim().toLowerCase();
-    let visible = 0;
-    document.querySelectorAll("[data-person-row]").forEach((row) => {
-      const match = !query || row.dataset.q.includes(query);
-      row.hidden = !match;
-      if (match) visible += 1;
-    });
-    const emptyHint = document.querySelector("[data-people-empty]");
-    if (emptyHint) emptyHint.hidden = visible > 0;
+    state.peopleQuery = event.target.value;
+    state.peopleQueryFocus = true;
+    state.peoplePage = 1;
+    clearTimeout(onInput.peopleTimer);
+    onInput.peopleTimer = setTimeout(repaintPeople, 280);
     return;
   }
   if ((event.target.name === "template" || event.target.name === "offset_minutes") && event.target.form?.dataset.form === "rule") {

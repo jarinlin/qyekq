@@ -1094,6 +1094,10 @@ a.status-pill:hover {
   margin-bottom: 18px;
 }
 
+.toolbar .filters {
+  margin-bottom: 0;
+}
+
 .pager {
   display: flex;
   align-items: center;

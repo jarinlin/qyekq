@@ -714,14 +714,22 @@ def absence_at(userid, moment_iso):
     return ""
 
 
-def list_logs(page=1, page_size=20, status=None):
+def list_logs(page=1, page_size=10, status=None, query=None):
     page = max(int(page), 1)
     page_size = min(max(int(page_size), 1), 100)
-    where = ""
+    clauses = []
     args = []
     if status:
-        where = " WHERE status=?"
+        clauses.append("status=?")
         args.append(status)
+    text = (query or "").strip()
+    if text:
+        needle = "%" + text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        clauses.append(
+            "(person_name LIKE ? ESCAPE '\\' OR userid LIKE ? ESCAPE '\\' OR rule_name LIKE ? ESCAPE '\\' OR detail LIKE ? ESCAPE '\\')"
+        )
+        args.extend([needle, needle, needle, needle])
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
     with connect() as conn:
         total = conn.execute(f"SELECT COUNT(*) AS n FROM reminder_logs{where}", args).fetchone()["n"]
         pages = max((total + page_size - 1) // page_size, 1) if total else 1
