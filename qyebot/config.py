@@ -30,3 +30,36 @@ _load_env(ROOT / ".env")
 _db = os.environ.get("QYEBOT_DB_PATH", "")
 DB_PATH = Path(_db) if _db and Path(_db).is_absolute() else ROOT / (_db or "data/qyebot.sqlite")
 REDIS_URL = os.environ.get("QYEBOT_REDIS_URL", "redis://127.0.0.1:6379/0")
+LOG_PATH = ROOT / "jarin.log"
+
+
+def log_config():
+    return {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {
+            "plain": {"format": "%(asctime)s %(levelname)s %(name)s %(message)s"},
+        },
+        "handlers": {
+            "file": {
+                "class": "logging.handlers.RotatingFileHandler",
+                "formatter": "plain",
+                "filename": str(LOG_PATH),
+                "maxBytes": 10 * 1024 * 1024,
+                "backupCount": 3,
+                "encoding": "utf-8",
+            },
+        },
+        "root": {"handlers": ["file"], "level": "INFO"},
+        "loggers": {
+            "uvicorn": {"handlers": ["file"], "level": "INFO", "propagate": False},
+            "uvicorn.error": {"handlers": ["file"], "level": "INFO", "propagate": False},
+            "uvicorn.access": {"handlers": ["file"], "level": "INFO", "propagate": False},
+        },
+    }
+
+
+def configure_logging():
+    import logging.config
+
+    logging.config.dictConfig(log_config())

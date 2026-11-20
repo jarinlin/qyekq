@@ -339,6 +339,14 @@ function renderLogs() {
     </article>`;
 }
 
+function syncTimeRows(times) {
+  const list = Array.isArray(times) && times.length ? times : ["06:30"];
+  return list.map((time) => `<div class="sync-time-row">
+    <input name="leave_sync_time" type="time" value="${esc(time)}" required>
+    <button type="button" class="btn quiet sm" data-action="remove-sync-time">去掉</button>
+  </div>`).join("");
+}
+
 function leaveSyncNote(data) {
   const raw = String(data.leave_sync_at || "");
   if (!/^\d+$/.test(raw)) return "还没有成功拉取过。";
@@ -388,10 +396,14 @@ function renderConnect() {
             <span>应用 Secret ${InfoTip("Secret 仅保存在本机 SQLite 数据库中，接口不回传明文。")}</span>
             <input name="secret" type="password" autocomplete="new-password" placeholder="${data.secret_set ? "已安全保存，留空表示不修改" : "粘贴自建应用 Secret"}">
           </label>
-          <label class="field">
-            <span>请假同步时间 ${InfoTip("按上海时间，每天到这个时刻增量拉取请假审批单，并刷新一次成员缓存。今天这个时刻已经过了、而且今天还没做过时，保存后下一轮检查就会做。手动点「同步企业微信成员」会立刻刷新缓存。")}</span>
-            <input name="leave_sync_time" type="time" value="${esc(data.leave_sync_time || "06:30")}" required>
-          </label>
+          <fieldset class="field">
+            <span>审批同步时间 ${InfoTip("按上海时间。加几个时刻就到点拉几次。请假、出差、外出都是同一类假勤审批，不用填模板 ID。每次从上次成功时间接着拉，重叠 2 分钟。换上这次更新后的第一次同步，会再补近 28 天。")}</span>
+            <div class="sync-time-list" data-sync-time-list>${syncTimeRows(data.leave_sync_times)}</div>
+            <div class="sync-time-actions">
+              <button type="button" class="btn quiet sm" data-action="add-sync-time">再加一个时间</button>
+              <button type="button" class="btn quiet sm" data-action="sync-approvals">${ICONS.sync}<span>立刻同步</span></button>
+            </div>
+          </fieldset>
           <p class="hint">${esc(leaveSyncNote(data))}${data.secret_set ? ` 当前已保存 Secret（末四位 ${esc(data.secret_hint)}）。` : ""}${data.last_test_message ? ` ${esc(data.last_test_message)}` : ""}</p>
           <div class="sheet-actions" style="border-top:0;padding-top:4px;margin-top:14px">
             <button class="btn primary" type="submit">保存应用配置</button>
@@ -492,6 +504,24 @@ function trapSheetFocus(event) {
     event.preventDefault();
     first.focus();
   }
+}
+
+function addSyncTime(button) {
+  const list = button.closest("form")?.querySelector("[data-sync-time-list]");
+  if (!list) return;
+  const row = document.createElement("div");
+  row.className = "sync-time-row";
+  row.innerHTML = `<input name="leave_sync_time" type="time" required>
+    <button type="button" class="btn quiet sm" data-action="remove-sync-time">去掉</button>`;
+  list.appendChild(row);
+  row.querySelector("input")?.focus();
+}
+
+function removeSyncTime(button) {
+  const list = button.closest("[data-sync-time-list]");
+  const row = button.closest(".sync-time-row");
+  if (!list || !row || list.children.length <= 1) return;
+  row.remove();
 }
 
 function toggleDirectory(button) {
@@ -823,6 +853,8 @@ async function onClick(event) {
       return;
     }
     if (action === "close-sheet") closeSheet();
+    else if (action === "add-sync-time") addSyncTime(target);
+    else if (action === "remove-sync-time") removeSyncTime(target);
     else if (action === "toggle-directory") toggleDirectory(target);
     else if (action === "new-person") personForm(null);
     else if (action === "edit-person") personForm(findById(state.data.items, id));
@@ -853,6 +885,7 @@ async function onClick(event) {
     });
     else if (action === "toggle") await toggleItem(target);
     else if (action === "sync-people") await syncPeople(target);
+    else if (action === "sync-approvals") await syncApprovals(target);
     else if (action === "run-tick") await runTick(target);
     else if (action === "toggle-scheduler") await toggleScheduler(target);
     else if (action === "test-wecom") await testWecom(target);
@@ -891,6 +924,17 @@ async function toggleItem(button) {
     });
     toast(!enabled ? "已启用" : "已停用");
     await load();
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function syncApprovals(button) {
+  button.disabled = true;
+  try {
+    const result = await api("/approvals/sync", { method: "POST" });
+    toast(result.message || result.reason || "审批已同步");
+    if (result.ran) await load();
   } finally {
     button.disabled = false;
   }
@@ -1117,7 +1161,7 @@ async function saveWecom(form) {
       corp_id: form.corp_id.value.trim(),
       agent_id: form.agent_id.value.trim(),
       secret: form.secret.value.trim(),
-      leave_sync_time: form.leave_sync_time.value.trim(),
+      leave_sync_times: [...form.querySelectorAll("input[name=leave_sync_time]")].map((node) => node.value.trim()).filter(Boolean),
     }),
   });
   toast("企业微信配置已保存");

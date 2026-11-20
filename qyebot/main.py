@@ -11,10 +11,10 @@ from fastapi.staticfiles import StaticFiles
 from qyebot import db, engine
 from qyebot.api import router
 from qyebot.auth import COOKIE, ensure_auth, token_ok
-from qyebot.config import SRC
+from qyebot.config import SRC, configure_logging
 from qyebot.wecom import WeComError
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+configure_logging()
 log = logging.getLogger("qyebot")
 mimetypes.add_type("text/css", ".css")
 mimetypes.add_type("application/javascript", ".js")

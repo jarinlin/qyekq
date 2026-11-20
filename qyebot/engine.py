@@ -379,8 +379,10 @@ def _run():
                 skipped += 1
         chosen = plan["chosen"]
         work_at = chosen - timedelta(minutes=int(rule["offset_minutes"]))
-        if db.on_leave(person["userid"], slot_iso(work_at)):
-            state = _mark(person, rule, chosen, "skipped", "当天请假")
+        absence = db.absence_at(person["userid"], slot_iso(work_at))
+        if absence:
+            detail = {"trip": "当天出差", "out": "当天外出"}.get(absence, "当天请假")
+            state = _mark(person, rule, chosen, "skipped", detail)
             if state != "exists":
                 skipped += 1
             continue

@@ -255,13 +255,13 @@ def sync_directory_if_due():
     failed_raw = (settings.get("directory_sync_fail_at") or "").strip()
     if failed_raw.isdigit() and int(now.timestamp()) < int(failed_raw):
         return {"ran": False, "reason": "上次同步失败，稍后再试"}
-    hour, minute = leaves.sync_clock(settings.get("leave_sync_time"))
-    due = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    if now < due:
-        return {"ran": False, "reason": "还没到今天的同步时间"}
+    raw_clocks = settings.get("leave_sync_time")
+    due = leaves.latest_due(now, raw_clocks)
+    if due is None:
+        return {"ran": False, "reason": f"还没到今天 {leaves.next_clock_label(now, raw_clocks)}"}
     last_raw = (settings.get("directory_sync_at") or "").strip()
     if last_raw.isdigit() and datetime.fromtimestamp(int(last_raw), ZoneInfo("Asia/Shanghai")) >= due:
-        return {"ran": False, "reason": "今天已经同步过"}
+        return {"ran": False, "reason": f"今天 {due.strftime('%H:%M')} 已经同步过"}
     try:
         result = sync_users()
     except WeComError as exc:
@@ -367,16 +367,23 @@ def get_leaves(userids, start_ts, end_ts):
     return result
 
 
-def list_approval_numbers(start_ts, end_ts):
+def list_approval_numbers(start_ts, end_ts, template_id="", record_type=""):
     numbers = []
     cursor = ""
     legacy = False
+    filters = []
+    if template_id:
+        filters.append({"key": "template_id", "value": template_id})
+    if record_type:
+        filters.append({"key": "record_type", "value": str(record_type)})
     while True:
         payload = {
             "starttime": int(start_ts),
             "endtime": int(end_ts),
             "size": 100,
         }
+        if filters:
+            payload["filters"] = filters
         if legacy:
             payload["cursor"] = int(cursor or 0)
         else:
@@ -402,39 +409,112 @@ def get_approval_detail(sp_no):
     return data.get("info") or {}
 
 
-def parse_leave_approval(info):
-    contents = ((info.get("apply_data") or {}).get("contents")) or []
-    span = None
-    for content in contents:
-        if content.get("control") != "Vacation":
-            continue
-        vacation = (content.get("value") or {}).get("vacation") or {}
-        attendance = vacation.get("attendance") or {}
-        try:
-            attendance_type = int(attendance.get("type") or 1)
-        except (TypeError, ValueError):
-            attendance_type = 1
-        if attendance_type != 1:
-            continue
-        date_range = attendance.get("date_range") or {}
-        begin = date_range.get("new_begin") or date_range.get("begin")
-        end = date_range.get("new_end") or date_range.get("end")
-        if not begin or not end:
-            continue
-        name = ""
-        options = ((vacation.get("selector") or {}).get("options")) or []
-        if options:
-            values = options[0].get("value") or []
-            if values:
-                name = values[0].get("text") or ""
-        span = (int(begin), int(end), name)
-        break
-    if not span:
+ABSENCE_KIND = {1: "leave", 3: "trip", 4: "out"}
+ABSENCE_NAME = {"leave": "请假", "trip": "出差", "out": "外出"}
+
+
+def _unix_pair(begin, end):
+    if not begin or not end:
+        return None
+    try:
+        return int(begin), int(end)
+    except (TypeError, ValueError):
+        return None
+
+
+def _range_pair(date_range):
+    date_range = date_range or {}
+    return _unix_pair(date_range.get("new_begin") or date_range.get("begin"), date_range.get("new_end") or date_range.get("end"))
+
+
+def _absence_span(attendance):
+    try:
+        attendance_type = int((attendance or {}).get("type") or 0)
+    except (TypeError, ValueError):
+        return None
+    kind = ABSENCE_KIND.get(attendance_type)
+    pair = _range_pair((attendance or {}).get("date_range"))
+    if not kind or not pair:
+        return None
+    return kind, pair[0], pair[1]
+
+
+def _vacation_name(vacation):
+    options = ((vacation.get("selector") or {}).get("options")) or []
+    if not options:
+        return ""
+    values = options[0].get("value") or []
+    if not values:
+        return ""
+    return values[0].get("text") or ""
+
+
+def _named_kind(kind, name):
+    if "出差" in name:
+        return "trip"
+    if "外出" in name:
+        return "out"
+    return kind
+
+
+def _approval_spans(info):
+    spans = []
+    _collect_spans(((info.get("apply_data") or {}).get("contents")) or [], spans)
+    return spans
+
+
+def _collect_spans(contents, spans):
+    for content in contents or []:
+        control = content.get("control")
+        value = content.get("value") or {}
+        if control == "Vacation":
+            vacation = value.get("vacation") or {}
+            span = _absence_span(vacation.get("attendance") or {})
+            if not span:
+                continue
+            name = _vacation_name(vacation)
+            kind = _named_kind(span[0], name)
+            spans.append((kind, span[1], span[2], name or ABSENCE_NAME.get(kind, "")))
+        elif control == "Attendance":
+            span = _absence_span(value.get("attendance") or {})
+            if not span:
+                continue
+            kind = _named_kind(span[0], "")
+            spans.append((kind, span[1], span[2], ABSENCE_NAME.get(kind, "")))
+        elif control == "DateRange":
+            pair = _range_pair(value.get("date_range"))
+            if pair:
+                spans.append(("", pair[0], pair[1], ""))
+        elif control == "Table":
+            for child in value.get("children") or []:
+                _collect_spans(child.get("list") or [], spans)
+
+
+def parse_leave_approval(info, force_kind=""):
+    spans = _approval_spans(info)
+    found = None
+    if force_kind:
+        for item in spans:
+            if item[0] == force_kind:
+                found = item
+                break
+        if not found and spans:
+            kind_name = ABSENCE_NAME.get(force_kind, "")
+            found = (force_kind, spans[0][1], spans[0][2], spans[0][3] or kind_name)
+    else:
+        for item in spans:
+            if item[0]:
+                found = item
+                break
+    if not found:
         return None
     userid = ((info.get("applyer") or {}).get("userid")) or ""
     if not userid:
         return None
-    begin, end, name = span
+    kind, begin, end, name = found
+    if not force_kind:
+        kind = _named_kind(kind, f"{name}{info.get('sp_name') or ''}")
+        name = name or ABSENCE_NAME.get(kind, "")
     try:
         status = int(info.get("sp_status") or 0)
     except (TypeError, ValueError):
@@ -448,5 +528,6 @@ def parse_leave_approval(info):
         "leave_start": datetime.fromtimestamp(begin, tz).isoformat(timespec="seconds"),
         "leave_end": datetime.fromtimestamp(end, tz).isoformat(timespec="seconds"),
         "leave_name": name,
+        "kind": kind,
         "apply_time": datetime.fromtimestamp(apply_time, tz).isoformat(timespec="seconds"),
     }

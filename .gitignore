@@ -8,3 +8,5 @@ Projectprogress.md
 .impeccable/
 data/*.sqlite
 data/*.sqlite-*
+jarin.log
+jarin.log.*

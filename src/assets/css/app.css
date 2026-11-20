@@ -1511,6 +1511,34 @@ textarea:focus {
   cursor: pointer;
 }
 
+.sync-time-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.sync-time-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sync-time-row input {
+  flex: 1;
+}
+
+.sync-time-list .sync-time-row:only-child [data-action="remove-sync-time"] {
+  visibility: hidden;
+}
+
+.sync-time-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 .directory-head {
   display: flex;
   align-items: stretch;

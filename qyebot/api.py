@@ -66,7 +66,8 @@ class WecomIn(BaseModel):
     corp_id: str = Field(min_length=1, max_length=64)
     agent_id: str = Field(min_length=1, max_length=16)
     secret: str = ""
-    leave_sync_time: str = "06:30"
+    leave_sync_time: str = ""
+    leave_sync_times: list[str] = []
 
 
 class SchedulerIn(BaseModel):
@@ -161,14 +162,16 @@ def _prepare_rule(body: RuleIn):
     return data
 
 
-def _clock(value):
-    parts = (value or "").strip().split(":")
-    if len(parts) < 2 or not parts[0].isdigit() or not parts[1].isdigit():
-        raise HTTPException(400, "请假同步时间要写成 时:分")
-    hour, minute = int(parts[0]), int(parts[1])
-    if hour > 23 or minute > 59:
-        raise HTTPException(400, "请假同步时间要写成 时:分")
-    return f"{hour:02d}:{minute:02d}"
+def _clocks(values):
+    try:
+        found = leaves.parse_sync_clocks(values)
+    except ValueError:
+        raise HTTPException(400, "同步时间要写成 时:分，例如 06:30") from None
+    if not found:
+        raise HTTPException(400, "至少留一个同步时间")
+    if len(found) > 48:
+        raise HTTPException(400, "一天最多 48 个同步时间")
+    return ",".join(f"{hour:02d}:{minute:02d}" for hour, minute in found)
 
 
 def _public_wecom():
@@ -180,7 +183,7 @@ def _public_wecom():
         "agent_id": settings.get("agent_id") or "",
         "secret_set": bool(secret),
         "secret_hint": secret[-4:] if len(secret) >= 4 else "",
-        "leave_sync_time": leaves.format_sync_clock(settings.get("leave_sync_time")),
+        "leave_sync_times": leaves.format_sync_clocks(settings.get("leave_sync_time")),
         "leave_sync_at": settings.get("leave_sync_at") or "",
         "last_test_ok": True if tested == "1" else False if tested == "0" else None,
         "last_test_at": settings.get("last_test_at") or "",
@@ -276,21 +279,20 @@ def put_wecom(body: WecomIn):
     agent_id = body.agent_id.strip()
     if not agent_id.isdigit():
         raise HTTPException(400, "AgentId 应该是数字")
-    leave_sync_time = _clock(body.leave_sync_time)
+    leave_sync_time = _clocks(body.leave_sync_times or body.leave_sync_time)
     current = db.get_settings()
     secret = body.secret.strip()
     if not secret:
         secret = current.get("secret") or ""
     if not secret:
         raise HTTPException(400, "第一次保存要填写 Secret")
-    db.set_settings(
-        {
-            "corp_id": corp_id,
-            "agent_id": agent_id,
-            "secret": secret,
-            "leave_sync_time": leave_sync_time,
-        }
-    )
+    saved = {
+        "corp_id": corp_id,
+        "agent_id": agent_id,
+        "secret": secret,
+        "leave_sync_time": leave_sync_time,
+    }
+    db.set_settings(saved)
     from qyebot import cache
 
     cache.delete(f"qyebot:token:{corp_id}")
@@ -371,6 +373,11 @@ def remove_personnel(person_id: int):
     if not db.delete_person(person_id):
         _missing("人员")
     return {"ok": True}
+
+
+@router.post("/approvals/sync")
+def sync_approvals():
+    return leaves.run_sync()
 
 
 @router.post("/personnel/sync")

@@ -101,6 +101,7 @@ CREATE TABLE IF NOT EXISTS leave_approvals (
     leave_start TEXT NOT NULL,
     leave_end TEXT NOT NULL,
     leave_name TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'leave',
     apply_time TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -166,8 +167,11 @@ def connect():
 
 
 def init_db():
+    from qyebot.migrate import apply
+
     with connect() as conn:
         conn.executescript(SCHEMA)
+        apply(conn)
         _seed(conn)
 
 
@@ -637,14 +641,15 @@ def upsert_leave(row):
         conn.execute(
             """
             INSERT INTO leave_approvals (
-                sp_no, userid, sp_status, leave_start, leave_end, leave_name, apply_time, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                sp_no, userid, sp_status, leave_start, leave_end, leave_name, kind, apply_time, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(sp_no) DO UPDATE SET
                 userid=excluded.userid,
                 sp_status=excluded.sp_status,
                 leave_start=excluded.leave_start,
                 leave_end=excluded.leave_end,
                 leave_name=excluded.leave_name,
+                kind=excluded.kind,
                 apply_time=excluded.apply_time,
                 updated_at=excluded.updated_at
             """,
@@ -655,6 +660,7 @@ def upsert_leave(row):
                 row["leave_start"],
                 row["leave_end"],
                 row.get("leave_name") or "",
+                row.get("kind") or "leave",
                 row["apply_time"],
                 now,
             ),
@@ -684,15 +690,15 @@ def list_leaves_to_refresh(since_iso):
     return [row["sp_no"] for row in rows]
 
 
-def on_leave(userid, moment_iso):
+def absence_at(userid, moment_iso):
     try:
         moment = datetime.fromisoformat(moment_iso)
     except ValueError:
-        return False
+        return ""
     with connect() as conn:
         rows = conn.execute(
             """
-            SELECT leave_start, leave_end FROM leave_approvals
+            SELECT leave_start, leave_end, kind FROM leave_approvals
             WHERE userid=? AND sp_status=2
             """,
             (userid,),
@@ -704,8 +710,8 @@ def on_leave(userid, moment_iso):
         except ValueError:
             continue
         if start <= moment <= end:
-            return True
-    return False
+            return row["kind"] or "leave"
+    return ""
 
 
 def list_logs(page=1, page_size=20, status=None):
